@@ -1,0 +1,102 @@
+import SwiftUI
+import WebKit
+
+// 1. VISTA PRINCIPAL
+struct ContentView: View {
+    @State private var urlText: String = ""
+    @State private var selectedResolution = "720p"
+    @State private var showWebView = false
+    
+    let resolutions = ["720p", "1080p", "2K", "4K"]
+    
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 25) {
+                Text("Configurador iOS")
+                    .font(.title2)
+                    .bold()
+                
+                // Campo de texto para la URL
+                TextField("Introduce la URL (ej: github.io/...)", text: $urlText)
+                    .textFieldStyle(.roundedBorder)
+                    .padding(.horizontal)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.URL) // Optimiza el teclado para URLs
+                
+                // Selector de resolución
+                VStack(alignment: .leading) {
+                    Text("Selección de Resolución:")
+                        .font(.subheadline)
+                        .foregroundColor(.gray)
+                    
+                    Picker("Resolución", selection: $selectedResolution) {
+                        ForEach(resolutions, id: \.self) { res in
+                            Text(res).tag(res)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+                .padding(.horizontal)
+                
+                Spacer()
+                
+                // Botón - Solo funciona si hay texto
+                Button(action: {
+                    if !urlText.trimmingCharacters(in: .whitespaces).isEmpty {
+                        showWebView = true
+                    }
+                }) {
+                    Text("ABRIR WEBVIEW")
+                        .bold()
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(urlText.isEmpty ? Color.gray.opacity(0.3) : Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(12)
+                }
+                .disabled(urlText.isEmpty)
+                .padding(.horizontal)
+            }
+            .padding(.vertical, 40)
+            // Navegación hacia la WebView
+            .navigationDestination(isPresented: $showWebView) {
+                WebViewContainer(urlString: urlText)
+            }
+        }
+    }
+}
+
+// 2. COMPONENTE WEBVIEW (Dentro del mismo archivo)
+struct WebViewContainer: UIViewRepresentable {
+    let urlString: String
+    
+    func makeUIView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        
+        // WKWebView es el motor que iOS usa para renderizar web.
+        // Soporta nativamente el autocompletado de contraseñas.
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.allowsBackForwardNavigationGestures = true
+        return webView
+    }
+    
+    func updateUIView(_ uiView: WKWebView, context: Context) {
+        var finalUrl = urlString.trimmingCharacters(in: .whitespaces)
+        
+        // Forzamos HTTPS para que 1Password confíe en la web
+        if !finalUrl.lowercased().hasPrefix("http") {
+            finalUrl = "https://\(finalUrl)"
+        }
+        
+        if let url = URL(string: finalUrl) {
+            let request = URLRequest(url: url)
+            uiView.load(request)
+        }
+    }
+}
+
+// 3. PREVISUALIZACIÓN (Opcional, para verlo en Xcode)
+#Preview {
+    ContentView()
+}
