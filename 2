@@ -1,10 +1,22 @@
 import SwiftUI
+
+@main
+struct pruebaApp: App {
+    var body: some Scene {
+        WindowGroup {
+            ContentView() // Aquí se inicia tu vista principal
+        }
+    }
+}
+
+import SwiftUI
 import WebKit
 
 // MARK: - VISTA PRINCIPAL (UI)
 struct ContentView: View {
-    // Estados para controlar la URL, la resolución y la navegación
-    @State private var urlText: String = ""
+    // @AppStorage guarda el texto automáticamente en el dispositivo. 
+    // Aunque la app se cierre o falle (SIGTERM), la URL seguirá ahí al abrirla.
+    @AppStorage("last_url_saved") private var urlText: String = ""
     @State private var selectedResolution = "720p"
     @State private var showWebView = false
     
@@ -27,13 +39,15 @@ struct ContentView: View {
                     
                     TextField("Introduce la URL (ej: github.io/...)", text: $urlText)
                         .textFieldStyle(.roundedBorder)
-                        .autocorrectionDisabled()
+                        // Configuraciones para mejorar el autocompletado nativo:
+                        .textContentType(.URL) // Indica a iOS que esto es una dirección web
+                        .keyboardType(.URL)    // Abre el teclado con el botón ".com" y "/"
+                        .autocorrectionDisabled(true)
                         .textInputAutocapitalization(.never)
-                        .keyboardType(.URL) // Teclado optimizado para webs
                 }
                 .padding(.horizontal)
                 
-                // Selector de resolución (Equivalente a tus RadioButtons de Android)
+                // Selector de resolución
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Selección de Resolución:")
                         .font(.subheadline)
@@ -44,13 +58,13 @@ struct ContentView: View {
                             Text(res).tag(res)
                         }
                     }
-                    .pickerStyle(.segmented) // Estilo visual de botones unidos
+                    .pickerStyle(.segmented)
                 }
                 .padding(.horizontal)
                 
                 Spacer()
                 
-                // Botón Principal - Solo se activa si hay texto
+                // Botón Principal
                 Button(action: {
                     if !urlText.trimmingCharacters(in: .whitespaces).isEmpty {
                         showWebView = true
@@ -64,7 +78,7 @@ struct ContentView: View {
                         .foregroundColor(.white)
                         .cornerRadius(12)
                 }
-                .disabled(urlText.isEmpty) // Bloquea el botón si está vacío
+                .disabled(urlText.isEmpty)
                 .padding(.horizontal)
                 .padding(.bottom, 30)
             }
@@ -79,33 +93,36 @@ struct ContentView: View {
     }
 }
 
-// MARK: - MOTOR WEBVIEW (Compatible con 1Password/AutoFill)
+// MARK: - MOTOR WEBVIEW (Optimizado)
 struct WebViewContainer: UIViewRepresentable {
     let urlString: String
     
-    // Crea la vista de la WebView (UIKit) y la pasa a SwiftUI
+    // El ProcessPool ayuda a que las cookies y el autocompletado de formularios
+    // se mantengan consistentes durante la sesión.
+    static let sharedProcessPool = WKProcessPool()
+    
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
+        configuration.processPool = Self.sharedProcessPool
         
-        // WKWebView es el estándar en iOS que permite el autocompletado nativo
         let webView = WKWebView(frame: .zero, configuration: configuration)
-        
-        // Permitimos gestos de navegación (ir atrás/adelante deslizando)
         webView.allowsBackForwardNavigationGestures = true
         
         return webView
     }
     
-    // Se ejecuta cada vez que la URL cambia
     func updateUIView(_ uiView: WKWebView, context: Context) {
+        // Limpiamos la URL y aseguramos que tenga HTTPS
         var finalUrl = urlString.trimmingCharacters(in: .whitespaces)
         
-        // Forzamos HTTPS: Sin esto, 1Password no se activará por seguridad
         if !finalUrl.lowercased().hasPrefix("http") {
             finalUrl = "https://\(finalUrl)"
         }
         
-        if let url = URL(string: finalUrl) {
+        guard let url = URL(string: finalUrl) else { return }
+        
+        // Solo cargamos si la URL es diferente a la actual para evitar bucles de recarga
+        if uiView.url?.absoluteString != url.absoluteString {
             let request = URLRequest(url: url)
             uiView.load(request)
         }
