@@ -4,127 +4,87 @@ import SwiftUI
 struct pruebaApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView() // Aquí se inicia tu vista principal
+            ContentView()
         }
     }
 }
 
 import SwiftUI
-import WebKit
 
-// MARK: - VISTA PRINCIPAL (UI)
 struct ContentView: View {
-    // @AppStorage guarda el texto automáticamente en el dispositivo. 
-    // Aunque la app se cierre o falle (SIGTERM), la URL seguirá ahí al abrirla.
-    @AppStorage("last_url_saved") private var urlText: String = ""
-    @State private var selectedResolution = "720p"
+    @AppStorage("url_guardada") private var urlText: String = ""
     @State private var showWebView = false
-    
-    let resolutions = ["720p", "1080p", "2K", "4K"]
-    
+
     var body: some View {
         NavigationStack {
-            VStack(spacing: 25) {
-                // Título superior
+            VStack(spacing: 20) {
                 Text("Configurador iOS")
-                    .font(.system(size: 24, weight: .bold))
-                    .padding(.top, 20)
-                
-                // Campo de texto para la URL
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("URL de destino")
-                        .font(.caption)
-                        .foregroundColor(.gray)
-                        .padding(.leading, 4)
-                    
-                    TextField("Introduce la URL (ej: github.io/...)", text: $urlText)
-                        .textFieldStyle(.roundedBorder)
-                        // Configuraciones para mejorar el autocompletado nativo:
-                        .textContentType(.URL) // Indica a iOS que esto es una dirección web
-                        .keyboardType(.URL)    // Abre el teclado con el botón ".com" y "/"
-                        .autocorrectionDisabled(true)
-                        .textInputAutocapitalization(.never)
-                }
-                .padding(.horizontal)
-                
-                // Selector de resolución
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Selección de Resolución:")
-                        .font(.subheadline)
-                        .bold()
-                    
-                    Picker("Resolución", selection: $selectedResolution) {
-                        ForEach(resolutions, id: \.self) { res in
-                            Text(res).tag(res)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                }
-                .padding(.horizontal)
-                
-                Spacer()
-                
-                // Botón Principal
-                Button(action: {
-                    if !urlText.trimmingCharacters(in: .whitespaces).isEmpty {
-                        showWebView = true
-                    }
-                }) {
-                    Text("ABRIR WEBVIEW")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(urlText.isEmpty ? Color.gray.opacity(0.3) : Color.blue)
-                        .foregroundColor(.white)
-                        .cornerRadius(12)
+                    .font(.title2).bold()
+
+                TextField("Introduce una URL", text: $urlText)
+                    .textFieldStyle(.roundedBorder)
+                    .keyboardType(.URL)
+                    .autocorrectionDisabled(true)
+                    .textInputAutocapitalization(.never)
+                    .padding(.horizontal)
+
+                Button("ABRIR") {
+                    showWebView = true
                 }
                 .disabled(urlText.isEmpty)
-                .padding(.horizontal)
-                .padding(.bottom, 30)
             }
-            .background(Color(.systemBackground))
-            // Navegación hacia la pantalla de la WebView
+            .padding(.top, 40)
             .navigationDestination(isPresented: $showWebView) {
-                WebViewContainer(urlString: urlText)
-                    .navigationTitle(urlText)
-                    .navigationBarTitleDisplayMode(.inline)
+                WebViewWrapper(urlString: urlText)
+                    .ignoresSafeArea(edges: .bottom)
             }
         }
     }
 }
 
-// MARK: - MOTOR WEBVIEW (Optimizado)
-struct WebViewContainer: UIViewRepresentable {
+
+import SwiftUI
+import WebKit
+
+struct WebViewWrapper: UIViewControllerRepresentable {
     let urlString: String
-    
-    // El ProcessPool ayuda a que las cookies y el autocompletado de formularios
-    // se mantengan consistentes durante la sesión.
-    static let sharedProcessPool = WKProcessPool()
-    
-    func makeUIView(context: Context) -> WKWebView {
-        let configuration = WKWebViewConfiguration()
-        configuration.processPool = Self.sharedProcessPool
-        
-        let webView = WKWebView(frame: .zero, configuration: configuration)
-        webView.allowsBackForwardNavigationGestures = true
-        
-        return webView
+
+    func makeUIViewController(context: Context) -> WebViewController {
+        let vc = WebViewController()
+        vc.urlString = urlString
+        return vc
     }
-    
-    func updateUIView(_ uiView: WKWebView, context: Context) {
-        // Limpiamos la URL y aseguramos que tenga HTTPS
-        var finalUrl = urlString.trimmingCharacters(in: .whitespaces)
-        
-        if !finalUrl.lowercased().hasPrefix("http") {
-            finalUrl = "https://\(finalUrl)"
+
+    func updateUIViewController(_ uiViewController: WebViewController, context: Context) {}
+}
+
+class WebViewController: UIViewController, WKNavigationDelegate {
+    var urlString: String = ""
+    private var webView: WKWebView!
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+
+        webView = WKWebView(frame: view.bounds)
+        webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        webView.navigationDelegate = self
+        webView.allowsBackForwardNavigationGestures = true
+        view.addSubview(webView)
+
+        var url = urlString.trimmingCharacters(in: .whitespaces)
+        if !url.hasPrefix("http") { url = "https://\(url)" }
+        if let finalURL = URL(string: url) {
+            webView.load(URLRequest(url: finalURL))
         }
-        
-        guard let url = URL(string: finalUrl) else { return }
-        
-        // Solo cargamos si la URL es diferente a la actual para evitar bucles de recarga
-        if uiView.url?.absoluteString != url.absoluteString {
-            let request = URLRequest(url: url)
-            uiView.load(request)
-        }
+    }
+
+    // Inyecta autocomplete cuando carga la página
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        webView.evaluateJavaScript("""
+            document.querySelectorAll('input[type="password"]')
+                .forEach(f => f.setAttribute('autocomplete', 'current-password'));
+            document.querySelectorAll('input[type="email"], input[type="text"]')
+                .forEach(f => f.setAttribute('autocomplete', 'username'));
+        """, completionHandler: nil)
     }
 }
