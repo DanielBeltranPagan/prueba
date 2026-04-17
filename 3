@@ -15,8 +15,8 @@ struct pruebaApp: App {
 import SwiftUI
 import WebKit
 
-// MARK: - VISTA DE INTERFAZ
 struct ContentView: View {
+    // AppStorage guarda la URL localmente en la app
     @AppStorage("last_url_saved") private var urlText: String = ""
     @State private var selectedResolution = "720p"
     @State private var showWebView = false
@@ -30,15 +30,15 @@ struct ContentView: View {
                     .font(.system(size: 24, weight: .bold))
                     .padding(.top, 20)
                 
-                // Campo de texto para la URL
                 VStack(alignment: .leading, spacing: 8) {
                     Text("URL de destino")
                         .font(.caption)
                         .foregroundColor(.gray)
                         .padding(.leading, 4)
                     
-                    TextField("Introduce la URL (ej: github.io/...)", text: $urlText)
+                    TextField("Introduce la URL (ej: misitio.com)", text: $urlText)
                         .textFieldStyle(.roundedBorder)
+                        // Estos modificadores ayudan al sistema a entender que es una URL
                         .textContentType(.URL)
                         .keyboardType(.URL)
                         .autocorrectionDisabled(true)
@@ -46,7 +46,6 @@ struct ContentView: View {
                 }
                 .padding(.horizontal)
                 
-                // Selector de resolución
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Selección de Resolución:")
                         .font(.subheadline)
@@ -63,7 +62,6 @@ struct ContentView: View {
                 
                 Spacer()
                 
-                // Botón Principal
                 Button(action: {
                     if !urlText.trimmingCharacters(in: .whitespaces).isEmpty {
                         showWebView = true
@@ -81,42 +79,57 @@ struct ContentView: View {
                 .padding(.horizontal)
                 .padding(.bottom, 30)
             }
-            .background(Color(.systemBackground))
             .navigationDestination(isPresented: $showWebView) {
+                // Pasamos la URL al contenedor
                 WebViewContainer(urlString: urlText)
-                    .navigationTitle(urlText)
-                    .navigationBarTitleDisplayMode(.inline)
+                    .ignoresSafeArea(.all, edges: .bottom)
             }
         }
     }
 }
 
-// MARK: - COMPONENTE DEL NAVEGADOR (WebView)
+// MARK: - WKWebView Wrapper
 struct WebViewContainer: UIViewRepresentable {
     let urlString: String
+    
+    // El ProcessPool estático es vital para compartir cookies y sesiones
     static let sharedProcessPool = WKProcessPool()
     
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.processPool = Self.sharedProcessPool
         
-        if #available(iOS 14.0, *) {
-            configuration.defaultWebpagePreferences.allowsContentJavaScript = true
-        }
+        // Habilitar la gestión de selección y formularios
+        let preferences = WKWebpagePreferences()
+        preferences.allowsContentJavaScript = true
+        configuration.defaultWebpagePreferences = preferences
+        
+        // Permitir que se guarden datos de tarjetas y autocompletado
+        configuration.preferences.minimumFontSize = 10
         
         let webView = WKWebView(frame: .zero, configuration: configuration)
+        
+        // Permitir gestos de navegación (atrás/adelante)
         webView.allowsBackForwardNavigationGestures = true
+        
+        // IMPORTANTE: Esto ayuda a que el teclado reconozca campos de texto
+        webView.isOpaque = false
+        webView.backgroundColor = .clear
+        
         return webView
     }
     
     func updateUIView(_ uiView: WKWebView, context: Context) {
         var finalUrl = urlString.trimmingCharacters(in: .whitespaces)
+        
+        // Validar prefijo HTTP/HTTPS
         if !finalUrl.lowercased().hasPrefix("http") {
             finalUrl = "https://\(finalUrl)"
         }
         
         guard let url = URL(string: finalUrl) else { return }
         
+        // Solo cargar si la URL es diferente para evitar bucles de recarga
         if uiView.url?.absoluteString != url.absoluteString {
             let request = URLRequest(url: url)
             uiView.load(request)
