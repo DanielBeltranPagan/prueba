@@ -1,0 +1,125 @@
+import SwiftUI
+
+@main
+struct pruebaApp: App {
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+        }
+    }
+}
+
+
+
+
+import SwiftUI
+import WebKit
+
+// MARK: - VISTA DE INTERFAZ
+struct ContentView: View {
+    @AppStorage("last_url_saved") private var urlText: String = ""
+    @State private var selectedResolution = "720p"
+    @State private var showWebView = false
+    
+    let resolutions = ["720p", "1080p", "2K", "4K"]
+    
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 25) {
+                Text("Configurador iOS")
+                    .font(.system(size: 24, weight: .bold))
+                    .padding(.top, 20)
+                
+                // Campo de texto para la URL
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("URL de destino")
+                        .font(.caption)
+                        .foregroundColor(.gray)
+                        .padding(.leading, 4)
+                    
+                    TextField("Introduce la URL (ej: github.io/...)", text: $urlText)
+                        .textFieldStyle(.roundedBorder)
+                        .textContentType(.URL)
+                        .keyboardType(.URL)
+                        .autocorrectionDisabled(true)
+                        .textInputAutocapitalization(.never)
+                }
+                .padding(.horizontal)
+                
+                // Selector de resolución
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Selección de Resolución:")
+                        .font(.subheadline)
+                        .bold()
+                    
+                    Picker("Resolución", selection: $selectedResolution) {
+                        ForEach(resolutions, id: \.self) { res in
+                            Text(res).tag(res)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+                .padding(.horizontal)
+                
+                Spacer()
+                
+                // Botón Principal
+                Button(action: {
+                    if !urlText.trimmingCharacters(in: .whitespaces).isEmpty {
+                        showWebView = true
+                    }
+                }) {
+                    Text("ABRIR WEBVIEW")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(urlText.isEmpty ? Color.gray.opacity(0.3) : Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(12)
+                }
+                .disabled(urlText.isEmpty)
+                .padding(.horizontal)
+                .padding(.bottom, 30)
+            }
+            .background(Color(.systemBackground))
+            .navigationDestination(isPresented: $showWebView) {
+                WebViewContainer(urlString: urlText)
+                    .navigationTitle(urlText)
+                    .navigationBarTitleDisplayMode(.inline)
+            }
+        }
+    }
+}
+
+// MARK: - COMPONENTE DEL NAVEGADOR (WebView)
+struct WebViewContainer: UIViewRepresentable {
+    let urlString: String
+    static let sharedProcessPool = WKProcessPool()
+    
+    func makeUIView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.processPool = Self.sharedProcessPool
+        
+        if #available(iOS 14.0, *) {
+            configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        }
+        
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.allowsBackForwardNavigationGestures = true
+        return webView
+    }
+    
+    func updateUIView(_ uiView: WKWebView, context: Context) {
+        var finalUrl = urlString.trimmingCharacters(in: .whitespaces)
+        if !finalUrl.lowercased().hasPrefix("http") {
+            finalUrl = "https://\(finalUrl)"
+        }
+        
+        guard let url = URL(string: finalUrl) else { return }
+        
+        if uiView.url?.absoluteString != url.absoluteString {
+            let request = URLRequest(url: url)
+            uiView.load(request)
+        }
+    }
+}
