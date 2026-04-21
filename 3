@@ -11,39 +11,118 @@ struct pruebaApp: App {
 
 
 
-
 import SwiftUI
 import WebKit
 
+struct ContentView: View {
+    // AppStorage guarda la URL localmente en la app
+    @AppStorage("last_url_saved") private var urlText: String = ""
+    @State private var selectedResolution = "720p"
+    @State private var showWebView = false
+    
+    let resolutions = ["720p", "1080p", "2K", "4K"]
+    
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 25) {
+                Text("Configurador iOS")
+                    .font(.system(size: 24, weight: .bold))
+                    .padding(.top, 20)
+                
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("URL de destino")
+                        .font(.caption)
+                        .foregroundColor(.gray)
+                        .padding(.leading, 4)
+                    
+                    TextField("Introduce la URL (ej: misitio.com)", text: $urlText)
+                        .textFieldStyle(.roundedBorder)
+                        .textContentType(.URL)
+                        .keyboardType(.URL)
+                        .autocorrectionDisabled(true)
+                        .textInputAutocapitalization(.never)
+                }
+                .padding(.horizontal)
+                
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Selección de Resolución:")
+                        .font(.subheadline)
+                        .bold()
+                    
+                    Picker("Resolución", selection: $selectedResolution) {
+                        ForEach(resolutions, id: \.self) { res in
+                            Text(res).tag(res)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+                .padding(.horizontal)
+                
+                Spacer()
+                
+                Button(action: {
+                    if !urlText.trimmingCharacters(in: .whitespaces).isEmpty {
+                        showWebView = true
+                    }
+                }) {
+                    Text("ABRIR WEBVIEW")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(urlText.isEmpty ? Color.gray.opacity(0.3) : Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(12)
+                }
+                .disabled(urlText.isEmpty)
+                .padding(.horizontal)
+                .padding(.bottom, 30)
+            }
+            .navigationDestination(isPresented: $showWebView) {
+                // Pasamos la URL al contenedor
+                WebViewContainer(urlString: urlText)
+                    .ignoresSafeArea(.all, edges: .bottom)
+            }
+        }
+    }
+}
+
+// MARK: - WKWebView Wrapper con Bypass de Cookies integrado
 struct WebViewContainer: UIViewRepresentable {
     let urlString: String
+    
+    // El ProcessPool estático es vital para compartir cookies y sesiones
     static let sharedProcessPool = WKProcessPool()
     
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.processPool = Self.sharedProcessPool
         
-        // --- Tus configuraciones originales ---
+        // Habilitar la gestión de selección y JavaScript
         let preferences = WKWebpagePreferences()
         preferences.allowsContentJavaScript = true
         configuration.defaultWebpagePreferences = preferences
+        
+        // Configuraciones de tu código original
         configuration.preferences.minimumFontSize = 10
         
         let webView = WKWebView(frame: .zero, configuration: configuration)
+        
+        // Permitir gestos de navegación
         webView.allowsBackForwardNavigationGestures = true
         
-        // Mantenemos tu estilo visual
+        // Estética original
         webView.isOpaque = false
         webView.backgroundColor = .clear
         
-        // --- Inyección de Cookies ---
-        setupBypassCookies(for: urlString, in: webView)
+        // --- INYECCIÓN DE COOKIES ---
+        setupBypassCookies(url: urlString, webView: webView)
         
         return webView
     }
     
     func updateUIView(_ uiView: WKWebView, context: Context) {
         var finalUrl = urlString.trimmingCharacters(in: .whitespaces)
+        
         if !finalUrl.lowercased().hasPrefix("http") {
             finalUrl = "https://\(finalUrl)"
         }
@@ -55,8 +134,9 @@ struct WebViewContainer: UIViewRepresentable {
             uiView.load(request)
         }
     }
-    
-    private func setupBypassCookies(for url: String, in webView: WKWebView) {
+
+    // Función de bypass adaptada de tu código Android
+    private func setupBypassCookies(url: String, webView: WKWebView) {
         let cookieStore = webView.configuration.websiteDataStore.httpCookieStore
         
         func setCookie(name: String, value: String, domain: String) {
@@ -72,7 +152,6 @@ struct WebViewContainer: UIViewRepresentable {
             }
         }
 
-        // Lógica de dominios (Idéntica a tu código de Android)
         if url.contains("orbys.eu") {
             setCookie(name: "orbys-consent-cookie", value: "true", domain: ".orbys.eu")
         }
