@@ -15,124 +15,85 @@ struct pruebaApp: App {
 import SwiftUI
 import WebKit
 
-struct ContentView: View {
-    // AppStorage guarda la URL localmente en la app
-    @AppStorage("last_url_saved") private var urlText: String = ""
-    @State private var selectedResolution = "720p"
-    @State private var showWebView = false
-    
-    let resolutions = ["720p", "1080p", "2K", "4K"]
-    
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 25) {
-                Text("Configurador iOS")
-                    .font(.system(size: 24, weight: .bold))
-                    .padding(.top, 20)
-                
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("URL de destino")
-                        .font(.caption)
-                        .foregroundColor(.gray)
-                        .padding(.leading, 4)
-                    
-                    TextField("Introduce la URL (ej: misitio.com)", text: $urlText)
-                        .textFieldStyle(.roundedBorder)
-                        // Estos modificadores ayudan al sistema a entender que es una URL
-                        .textContentType(.URL)
-                        .keyboardType(.URL)
-                        .autocorrectionDisabled(true)
-                        .textInputAutocapitalization(.never)
-                }
-                .padding(.horizontal)
-                
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Selección de Resolución:")
-                        .font(.subheadline)
-                        .bold()
-                    
-                    Picker("Resolución", selection: $selectedResolution) {
-                        ForEach(resolutions, id: \.self) { res in
-                            Text(res).tag(res)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                }
-                .padding(.horizontal)
-                
-                Spacer()
-                
-                Button(action: {
-                    if !urlText.trimmingCharacters(in: .whitespaces).isEmpty {
-                        showWebView = true
-                    }
-                }) {
-                    Text("ABRIR WEBVIEW")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(urlText.isEmpty ? Color.gray.opacity(0.3) : Color.blue)
-                        .foregroundColor(.white)
-                        .cornerRadius(12)
-                }
-                .disabled(urlText.isEmpty)
-                .padding(.horizontal)
-                .padding(.bottom, 30)
-            }
-            .navigationDestination(isPresented: $showWebView) {
-                // Pasamos la URL al contenedor
-                WebViewContainer(urlString: urlText)
-                    .ignoresSafeArea(.all, edges: .bottom)
-            }
-        }
-    }
-}
-
-// MARK: - WKWebView Wrapper
 struct WebViewContainer: UIViewRepresentable {
     let urlString: String
-    
-    // El ProcessPool estático es vital para compartir cookies y sesiones
     static let sharedProcessPool = WKProcessPool()
     
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.processPool = Self.sharedProcessPool
         
-        // Habilitar la gestión de selección y formularios
+        // --- Tus configuraciones originales ---
         let preferences = WKWebpagePreferences()
         preferences.allowsContentJavaScript = true
         configuration.defaultWebpagePreferences = preferences
-        
-        // Permitir que se guarden datos de tarjetas y autocompletado
         configuration.preferences.minimumFontSize = 10
         
         let webView = WKWebView(frame: .zero, configuration: configuration)
-        
-        // Permitir gestos de navegación (atrás/adelante)
         webView.allowsBackForwardNavigationGestures = true
         
-        // IMPORTANTE: Esto ayuda a que el teclado reconozca campos de texto
+        // Mantenemos tu estilo visual
         webView.isOpaque = false
         webView.backgroundColor = .clear
+        
+        // --- Inyección de Cookies ---
+        setupBypassCookies(for: urlString, in: webView)
         
         return webView
     }
     
     func updateUIView(_ uiView: WKWebView, context: Context) {
         var finalUrl = urlString.trimmingCharacters(in: .whitespaces)
-        
-        // Validar prefijo HTTP/HTTPS
         if !finalUrl.lowercased().hasPrefix("http") {
             finalUrl = "https://\(finalUrl)"
         }
         
         guard let url = URL(string: finalUrl) else { return }
         
-        // Solo cargar si la URL es diferente para evitar bucles de recarga
         if uiView.url?.absoluteString != url.absoluteString {
             let request = URLRequest(url: url)
             uiView.load(request)
+        }
+    }
+    
+    private func setupBypassCookies(for url: String, in webView: WKWebView) {
+        let cookieStore = webView.configuration.websiteDataStore.httpCookieStore
+        
+        func setCookie(name: String, value: String, domain: String) {
+            let props: [HTTPCookiePropertyKey: Any] = [
+                .name: name,
+                .value: value,
+                .domain: domain,
+                .path: "/",
+                .expires: Date(timeIntervalSinceNow: 31536000)
+            ]
+            if let cookie = HTTPCookie(properties: props) {
+                cookieStore.setCookie(cookie)
+            }
+        }
+
+        // Lógica de dominios (Idéntica a tu código de Android)
+        if url.contains("orbys.eu") {
+            setCookie(name: "orbys-consent-cookie", value: "true", domain: ".orbys.eu")
+        }
+
+        if url.contains("marca.com") {
+            let d = ".marca.com"
+            setCookie(name: "euconsent-v2", value: "CP-l_sAP-l_sAAHABBENBEsCsAP_AAH_AACiQH5NX_X_fb39j-_59_9t0eY1P9_j77uQzDhfNk-4F3L_W_L8X42M7vJ36pq4KuR4Eu3LBIQFk2JHNKJ7GE5dF2R7ZgWk3vBIQJb2c7E5rH0c", domain: d)
+            setCookie(name: "didomi_token", value: "eyJ1c2VyX2lkIjoiMTlkYWY5MjYtZmZkMy02OGZmLThhNTYtMWU1M2U4MjU2MjBjIiwiY3JlYXRlZCI6IjIwMjYtMDQtMjFUMTA6MjU6MDIuOTczWiIsInVwZGF0ZWQiOiIyMDI2LTA0LTIxVDEwOjI1OjAyLjk3M1oiLCJ2ZXJzaW9uIjpudWxsfQ==", domain: d)
+            setCookie(name: "FCCDCF", value: "%5Bnull%2Cnull%2Cnull%2Cnull%2Cnull%2Cnull%2C%5B%5B32%2C%22consent%22%5D%5D%5D", domain: d)
+            setCookie(name: "didomi_token_notice_shown", value: "true", domain: d)
+        }
+
+        if url.contains("themoviedb.org") {
+            let d = ".themoviedb.org"
+            let consentValue = "isGpcEnabled=0&datestamp=Mon+Apr+20+2026+15%3A55%3A51&version=202310.2.0&browserGpcFlag=0&isIABGlobal=false&hosts=&landingPath=NotLandingPage&groups=C0004%3A1%2CC0003%3A1%2CC0002%3A1%2CC0001%3A1"
+            setCookie(name: "OptanonConsent", value: consentValue, domain: d)
+            setCookie(name: "OptanonAlertBoxClosed", value: "2026-04-20T13:55:51.081Z", domain: d)
+        }
+
+        if url.contains("youtube.com") {
+            setCookie(name: "SOCS", value: "CAISEwgDEgk4OTk4NzM2MzgaAmVzIAEaBgiA2ZXPBg", domain: ".youtube.com")
         }
     }
 }
