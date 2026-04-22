@@ -29,7 +29,7 @@ struct ContentView: View {
                 .padding(.horizontal)
                 
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Resolución Objetivo:")
+                    Text("Resolución Objetivo (Ancho):")
                         .font(.subheadline).bold()
                     Picker("Resolución", selection: $selectedResolution) {
                         ForEach(resolutions, id: \.self) { res in
@@ -78,9 +78,13 @@ struct WebViewManagerView: View {
             .ignoresSafeArea(.container, edges: .bottom)
             .toolbar {
                 ToolbarItem(placement: .principal) {
-                    Text("\(webWidth) x \(webHeight) PX")
-                        .font(.system(size: 14, weight: .bold, design: .monospaced))
-                        .foregroundColor(.blue)
+                    // Este indicador ahora mostrará el área visible escalada
+                    HStack {
+                        Image(systemName: "viewfinder")
+                        Text("\(webWidth) x \(webHeight) PX")
+                            .font(.system(size: 14, weight: .bold, design: .monospaced))
+                    }
+                    .foregroundColor(.blue)
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
@@ -94,13 +98,14 @@ struct WebViewContainer: UIViewRepresentable {
     @Binding var webWidth: Int
     @Binding var webHeight: Int
     
+    // Definimos los anchos estándar de escritorio
     var targetWidth: CGFloat {
         switch resolution {
-        case "720p": return 1280
+        case "720p":  return 1280
         case "1080p": return 1920
-        case "2K": return 2560
-        case "4K": return 3840
-        default: return 1920
+        case "2K":    return 2560
+        case "4K":    return 3840
+        default:      return 1920
         }
     }
 
@@ -115,7 +120,10 @@ struct WebViewContainer: UIViewRepresentable {
         
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
+        
+        // User Agent de Chrome Desktop para evitar versiones móviles
         webView.customUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+        
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.alpha = 0 
         
@@ -125,7 +133,6 @@ struct WebViewContainer: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
-        // Cargar URL si es necesario
         if uiView.url == nil {
             var finalUrl = urlString.trimmingCharacters(in: .whitespaces)
             if !finalUrl.lowercased().hasPrefix("http") { finalUrl = "https://\(finalUrl)" }
@@ -133,8 +140,7 @@ struct WebViewContainer: UIViewRepresentable {
                 uiView.load(URLRequest(url: url))
             }
         }
-        
-        // RE-APLICAR FIX AL ROTAR: SwiftUI llama a updateUIView cuando cambian los bounds
+        // Forzamos el ajuste de escala si SwiftUI redibuja (por ejemplo, al rotar)
         context.coordinator.applyFinalFixes(uiView)
     }
 
@@ -157,21 +163,28 @@ struct WebViewContainer: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             applyFinalFixes(webView)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            // Animación suave de aparición
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                 UIView.animate(withDuration: 0.4) { webView.alpha = 1 }
             }
         }
 
         func applyFinalFixes(_ webView: WKWebView) {
-            let targetW = parent.targetWidth
+            let tW = parent.targetWidth
             
-            // Este script calcula la escala relativa al ancho actual de la pantalla (ya sea Portrait o Landscape)
             let js = """
             (function() {
-                function adjustResolution() {
-                    var targetW = \(targetW);
-                    var currentWinW = window.innerWidth;
-                    var scale = currentWinW / targetW;
+                function update() {
+                    var targetW = \(tW);
+                    var deviceW = window.screen.width;
+                    // Si estamos en horizontal, el ancho disponible es el largo de la pantalla
+                    if (window.orientation === 90 || window.orientation === -90) {
+                        deviceW = Math.max(window.screen.width, window.screen.height);
+                    } else {
+                        deviceW = Math.min(window.screen.width, window.screen.height);
+                    }
+                    
+                    var scale = window.innerWidth / targetW;
 
                     var meta = document.querySelector('meta[name="viewport"]') || document.createElement('meta');
                     meta.name = "viewport";
@@ -180,16 +193,19 @@ struct WebViewContainer: UIViewRepresentable {
                     
                     document.documentElement.style.width = targetW + 'px';
                     document.body.style.width = targetW + 'px';
-                    document.body.style.overflowX = 'hidden';
 
+                    // Reportamos el área VISIBLE (Viewport) escalada
                     window.webkit.messageHandlers.resObserver.postMessage({
-                        w: document.documentElement.clientWidth,
-                        h: document.documentElement.clientHeight
+                        w: Math.round(window.innerWidth / scale),
+                        h: Math.round(window.innerHeight / scale)
                     });
                 }
 
-                adjustResolution();
-                window.onresize = adjustResolution;
+                update();
+                window.onresize = update;
+                window.addEventListener("orientationchange", function() {
+                    setTimeout(update, 200);
+                });
             })();
             """
             webView.evaluateJavaScript(js)
@@ -225,4 +241,5 @@ struct WebViewContainer: UIViewRepresentable {
         }
     }
 }
+
 // setCookie(name: "orbys-region-cookie", value: "emea", domain: ".orbys.eu")
