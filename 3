@@ -63,25 +63,21 @@ struct ContentView: View {
             }
             .navigationDestination(isPresented: $showWebView) {
                 GeometryReader { geo in
+                    // Cálculo de píxeles reales (Ancho x Alto)
                     let screenScale = UIScreen.main.scale
-                    let currentRes = "\(Int(geo.size.width * screenScale))x\(Int(geo.size.height * screenScale)) px"
+                    let pixelWidth = Int(geo.size.width * screenScale)
+                    let pixelHeight = Int(geo.size.height * screenScale)
                     
-                    ZStack {
-                        WebViewContainer(urlString: urlText, resolution: selectedResolution)
-                            .ignoresSafeArea(.container, edges: .bottom)
-                        
-                        // Opcional: Puedes poner un ProgressView aquí si la web tarda mucho
-                    }
-                    .toolbar {
-                        ToolbarItem(placement: .principal) {
-                            VStack {
-                                Text(selectedResolution).font(.headline)
-                                Text(currentRes)
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundColor(.secondary)
+                    WebViewContainer(urlString: urlText, resolution: selectedResolution)
+                        .ignoresSafeArea(.container, edges: .bottom)
+                        .toolbar {
+                            ToolbarItem(placement: .principal) {
+                                // Solo mostramos los píxeles en grande y claro
+                                Text("\(pixelWidth) x \(pixelHeight) PX")
+                                    .font(.system(size: 18, weight: .bold, design: .monospaced))
+                                    .foregroundColor(.primary)
                             }
                         }
-                    }
                 }
                 .navigationBarTitleDisplayMode(.inline)
             }
@@ -112,10 +108,8 @@ struct WebViewContainer: UIViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
         
-        // Empezamos totalmente invisible
         webView.alpha = 0 
         webView.scrollView.contentInsetAdjustmentBehavior = .always
-        
         setupBypassAndResolutionCookies(url: urlString, webView: webView)
         return webView
     }
@@ -127,7 +121,6 @@ struct WebViewContainer: UIViewRepresentable {
         
         if uiView.url == nil { uiView.load(URLRequest(url: url)) }
         
-        // Recalcular al rotar
         DispatchQueue.main.async {
             context.coordinator.applyZoom(to: uiView, forceShow: false)
         }
@@ -140,7 +133,6 @@ struct WebViewContainer: UIViewRepresentable {
         init(_ parent: WebViewContainer) { self.parent = parent }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            // Cuando la web carga, aplicamos zoom y luego mostramos
             applyZoom(to: webView, forceShow: true)
         }
         
@@ -168,13 +160,9 @@ struct WebViewContainer: UIViewRepresentable {
                 webView.scrollView.maximumZoomScale = zoomFactor
                 webView.scrollView.setZoomScale(zoomFactor, animated: false)
                 
-                // Solo si es la carga inicial o forzada, animamos la aparición
                 if forceShow {
-                    // Esperamos 0.5 segundos extra para asegurar que el motor de renderizado de WebKit se estabilice
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                        UIView.animate(withDuration: 0.5) {
-                            webView.alpha = 1
-                        }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                        UIView.animate(withDuration: 0.4) { webView.alpha = 1 }
                     }
                 }
             }
@@ -202,6 +190,5 @@ struct WebViewContainer: UIViewRepresentable {
         }
     }
 }
-
 
 // setCookie(name: "orbys-region-cookie", value: "emea", domain: ".orbys.eu")
