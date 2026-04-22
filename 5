@@ -174,7 +174,13 @@ struct WebViewContainer: UIViewRepresentable {
                 function update() {
                     var targetW = \(tW);
 
-                    // Viewport normal (sin zoom-out)
+                    // Ancho real del móvil
+                    var deviceW = window.innerWidth;
+
+                    // Escalado visual real (pero no exagerado)
+                    var scale = deviceW / targetW;
+
+                    // Viewport con escalado real
                     var meta = document.querySelector('meta[name="viewport"]');
                     if (!meta) {
                         meta = document.createElement('meta');
@@ -183,15 +189,17 @@ struct WebViewContainer: UIViewRepresentable {
                     }
 
                     meta.setAttribute('content',
-                        'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no'
+                        'width=' + targetW +
+                        ', initial-scale=' + scale +
+                        ', minimum-scale=' + scale +
+                        ', maximum-scale=' + scale +
+                        ', user-scalable=no'
                     );
 
-                    // Simulación interna de resolución
-                    var scaleFactor = targetW / window.innerWidth;
-
+                    // Medición interna
                     window.webkit.messageHandlers.resObserver.postMessage({
                         w: Math.round(targetW),
-                        h: Math.round(document.documentElement.scrollHeight * scaleFactor)
+                        h: Math.round(document.documentElement.scrollHeight / scale)
                     });
                 }
 
@@ -235,4 +243,3 @@ struct WebViewContainer: UIViewRepresentable {
         }
     }
 }
-
