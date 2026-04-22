@@ -1,5 +1,8 @@
-import SwiftUI
 
+import SwiftUI
+import WebKit
+
+// MARK: - Main App Entry
 @main
 struct pruebaApp: App {
     var body: some Scene {
@@ -9,14 +12,11 @@ struct pruebaApp: App {
     }
 }
 
-
-
-import SwiftUI
-import WebKit
-
+// MARK: - View Principal
 struct ContentView: View {
+    // AppStorage guarda la URL localmente en la app
     @AppStorage("last_url_saved") private var urlText: String = ""
-    @State private var selectedResolution = "720p" // Este valor ahora sí se usa
+    @State private var selectedResolution = "720p"
     @State private var showWebView = false
     
     let resolutions = ["720p", "1080p", "2K", "4K"]
@@ -34,7 +34,7 @@ struct ContentView: View {
                         .foregroundColor(.gray)
                         .padding(.leading, 4)
                     
-                    TextField("Introduce la URL", text: $urlText)
+                    TextField("Introduce la URL (ej: marca.com)", text: $urlText)
                         .textFieldStyle(.roundedBorder)
                         .textContentType(.URL)
                         .keyboardType(.URL)
@@ -77,7 +77,7 @@ struct ContentView: View {
                 .padding(.bottom, 30)
             }
             .navigationDestination(isPresented: $showWebView) {
-                // PASAMOS LA URL Y LA RESOLUCIÓN
+                // PASAMOS URL Y RESOLUCIÓN AL CONTENEDOR
                 WebViewContainer(urlString: urlText, resolution: selectedResolution)
                     .ignoresSafeArea(.all, edges: .bottom)
             }
@@ -85,9 +85,10 @@ struct ContentView: View {
     }
 }
 
+// MARK: - WKWebView Wrapper
 struct WebViewContainer: UIViewRepresentable {
     let urlString: String
-    let resolution: String // Recibimos la resolución
+    let resolution: String
     
     static let sharedProcessPool = WKProcessPool()
     
@@ -95,9 +96,15 @@ struct WebViewContainer: UIViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.processPool = Self.sharedProcessPool
         
-        // --- TRUCO DE RESOLUCIÓN: USER AGENT ---
-        // Engañamos a la web para que crea que somos un dispositivo con mayor resolución
-        if resolution == "4K" || resolution == "2K" {
+        // 1. Configuración de preferencias
+        let preferences = WKWebpagePreferences()
+        preferences.allowsContentJavaScript = true
+        configuration.defaultWebpagePreferences = preferences
+        configuration.preferences.minimumFontSize = 10
+        
+        // 2. Truco de Resolución: User Agent de Escritorio para saltar límites de móvil
+        if resolution == "4K" || resolution == "2K" || resolution == "1080p" {
+            // Engañamos a la web diciendo que somos un Mac con Chrome para habilitar altas resoluciones
             configuration.applicationNameForUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
         
@@ -106,21 +113,18 @@ struct WebViewContainer: UIViewRepresentable {
         webView.isOpaque = false
         webView.backgroundColor = .clear
         
-        // Aplicar cookies de bypass
-        setupBypassCookies(url: urlString, webView: webView)
-        
-        // --- TRUCO DE RESOLUCIÓN: JAVASCRIPT ---
-        // Inyectamos un script que intenta forzar la calidad en reproductores comunes
-        let scriptSource = "window.localStorage.setItem('video_quality', '\(resolution)');"
-        let script = WKUserScript(source: scriptSource, injectionTime: .atDocumentStart, forMainFrameOnly: true)
-        configuration.userContentController.addUserScript(script)
+        // 3. Inyectar Cookies de Bypass y Preferencias de Resolución
+        setupBypassAndResolutionCookies(url: urlString, webView: webView)
         
         return webView
     }
     
     func updateUIView(_ uiView: WKWebView, context: Context) {
         var finalUrl = urlString.trimmingCharacters(in: .whitespaces)
-        if !finalUrl.lowercased().hasPrefix("http") { finalUrl = "https://\(finalUrl)" }
+        if !finalUrl.lowercased().hasPrefix("http") {
+            finalUrl = "https://\(finalUrl)"
+        }
+        
         guard let url = URL(string: finalUrl) else { return }
         
         if uiView.url?.absoluteString != url.absoluteString {
@@ -128,23 +132,52 @@ struct WebViewContainer: UIViewRepresentable {
             uiView.load(request)
         }
     }
-
-    private func setupBypassCookies(url: String, webView: WKWebView) {
+    
+    // MARK: - Lógica de Cookies Integrada
+    private func setupBypassAndResolutionCookies(url: String, webView: WKWebView) {
         let cookieStore = webView.configuration.websiteDataStore.httpCookieStore
+        
         func setCookie(name: String, value: String, domain: String) {
-            let props: [HTTPCookiePropertyKey: Any] = [.name: name, .value: value, .domain: domain, .path: "/", .expires: Date(timeIntervalSinceNow: 31536000)]
-            if let cookie = HTTPCookie(properties: props) { cookieStore.setCookie(cookie) }
+            let props: [HTTPCookiePropertyKey: Any] = [
+                .name: name,
+                .value: value,
+                .domain: domain,
+                .path: "/",
+                .expires: Date(timeIntervalSinceNow: 31536000)
+            ]
+            if let cookie = HTTPCookie(properties: props) {
+                cookieStore.setCookie(cookie)
+            }
         }
 
-        // Tus cookies de bypass (Marca, YouTube, etc.)
-        if url.contains("marca.com") {
-            setCookie(name: "didomi_token", value: "tu_token...", domain: ".marca.com")
+        // --- BYPASS COOKIES (Tu código original) ---
+        if url.contains("orbys.eu") {
+            setCookie(name: "orbys-consent-cookie", value: "true", domain: ".orbys.eu")
         }
-        // ... el resto de tus cookies ...
-        
-        // COOKIE EXTRA PARA YOUTUBE (Forzar calidad si es posible)
+
+        if url.contains("marca.com") {
+            let d = ".marca.com"
+            setCookie(name: "euconsent-v2", value: "CP-l_sAP-l_sAAHABBENBEsCsAP_AAH_AACiQH5NX_X_fb39j-_59_9t0eY1P9_j77uQzDhfNk-4F3L_W_L8X42M7vJ36pq4KuR4Eu3LBIQFk2JHNKJ7GE5dF2R7ZgWk3vBIQJb2c7E5rH0c", domain: d)
+            setCookie(name: "didomi_token", value: "eyJ1c2VyX2lkIjoiMTlkYWY5MjYtZmZkMy02OGZmLThhNTYtMWU1M2U4MjU2MjBjIiwiY3JlYXRlZCI6IjIwMjYtMDQtMjFUMTA6MjU6MDIuOTczWiIsInVwZGF0ZWQiOiIyMDI2LTA0LTIxVDEwOjI1OjAyLjk3M1oiLCJ2ZXJzaW9uIjpudWxsfQ==", domain: d)
+            setCookie(name: "FCCDCF", value: "%5Bnull%2Cnull%2Cnull%2Cnull%2Cnull%2Cnull%2C%5B%5B32%2C%22consent%22%5D%5D%5D", domain: d)
+            setCookie(name: "didomi_token_notice_shown", value: "true", domain: d)
+        }
+
+        if url.contains("themoviedb.org") {
+            let d = ".themoviedb.org"
+            let consentValue = "isGpcEnabled=0&datestamp=Mon+Apr+20+2026+15%3A55%3A51&version=202310.2.0&browserGpcFlag=0&isIABGlobal=false&hosts=&landingPath=NotLandingPage&groups=C0004%3A1%2CC0003%3A1%2CC0002%3A1%2CC0001%3A1"
+            setCookie(name: "OptanonConsent", value: consentValue, domain: d)
+            setCookie(name: "OptanonAlertBoxClosed", value: "2026-04-20T13:55:51.081Z", domain: d)
+        }
+
+        // --- RESOLUTION COOKIES (Para YouTube y otros) ---
         if url.contains("youtube.com") {
-            setCookie(name: "PREF", value: "f4=4000000&res=\(resolution.replacingOccurrences(of: "p", with: ""))", domain: ".youtube.com")
+            // SOCS para bypass de consentimiento
+            setCookie(name: "SOCS", value: "CAISEwgDEgk4OTk4NzM2MzgaAmVzIAEaBgiA2ZXPBg", domain: ".youtube.com")
+            
+            // PREF cookie para intentar forzar resolución (ej: 2160 para 4K)
+            let resValue = resolution == "4K" ? "2160" : (resolution == "2K" ? "1440" : "1080")
+            setCookie(name: "PREF", value: "f4=4000000&res=\(resValue)", domain: ".youtube.com")
         }
     }
 }
