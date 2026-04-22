@@ -1,0 +1,213 @@
+import SwiftUI
+import WebKit
+
+// MARK: - Main View
+struct ContentView: View {
+    @AppStorage("last_url_saved") private var urlText: String = ""
+    @State private var selectedResolution = "1080p"
+    @State private var showWebView = false
+    
+    let resolutions = ["720p", "1080p", "2K", "4K"]
+    
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 25) {
+                Text("WebView Resolution Pro")
+                    .font(.system(size: 24, weight: .bold))
+                    .padding(.top, 40)
+                
+                TextField("Introduce la URL", text: $urlText)
+                    .textFieldStyle(.roundedBorder)
+                    .padding(.horizontal)
+                
+                Picker("Resolución", selection: $selectedResolution) {
+                    ForEach(resolutions, id: \.self) { Text($0) }
+                }
+                .pickerStyle(.segmented)
+                .padding()
+                
+                Spacer()
+                
+                Button("LANZAR") {
+                    showWebView = true
+                }
+                .padding()
+            }
+            .navigationDestination(isPresented: $showWebView) {
+                WebViewManagerView(urlString: urlText, resolution: selectedResolution)
+            }
+        }
+    }
+}
+
+// MARK: - Manager
+struct WebViewManagerView: View {
+    let urlString: String
+    let resolution: String
+    
+    @State private var webWidth = 0
+    @State private var webHeight = 0
+    
+    var body: some View {
+        WebViewContainer(
+            urlString: urlString,
+            resolution: resolution,
+            webWidth: $webWidth,
+            webHeight: $webHeight
+        )
+        .ignoresSafeArea()
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Text("\(webWidth) x \(webHeight)")
+                    .font(.system(.caption, design: .monospaced))
+            }
+        }
+    }
+}
+
+// MARK: - WebView
+struct WebViewContainer: UIViewRepresentable {
+    let urlString: String
+    let resolution: String
+    
+    @Binding var webWidth: Int
+    @Binding var webHeight: Int
+    
+    var targetWidth: CGFloat {
+        switch resolution {
+        case "720p": return 1280
+        case "1080p": return 1920
+        case "2K": return 2560
+        case "4K": return 3840
+        default: return 1920
+        }
+    }
+    
+    func makeUIView(context: Context) -> WKWebView {
+        let controller = WKUserContentController()
+        controller.add(context.coordinator, name: "resObserver")
+        
+        let config = WKWebViewConfiguration()
+        config.userContentController = controller
+        config.defaultWebpagePreferences.preferredContentMode = .desktop
+        
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = context.coordinator
+        
+        // 🔥 IMPORTANTE: cookies antes de cargar
+        setupCookies(webView: webView)
+        
+        return webView
+    }
+    
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        if webView.url == nil {
+            var final = urlString
+            if !final.starts(with: "http") {
+                final = "https://\(final)"
+            }
+            webView.load(URLRequest(url: URL(string: final)!))
+        }
+        
+        context.coordinator.injectJS(webView, targetWidth: targetWidth)
+    }
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+        let parent: WebViewContainer
+        
+        init(_ parent: WebViewContainer) {
+            self.parent = parent
+        }
+        
+        func userContentController(_ userContentController: WKUserContentController,
+                                   didReceive message: WKScriptMessage) {
+            if let dict = message.body as? [String: Int] {
+                DispatchQueue.main.async {
+                    self.parent.webWidth = dict["w"] ?? 0
+                    self.parent.webHeight = dict["h"] ?? 0
+                }
+            }
+        }
+        
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            injectJS(webView, targetWidth: parent.targetWidth)
+        }
+        
+        func injectJS(_ webView: WKWebView, targetWidth: CGFloat) {
+            let js = """
+            (function() {
+                function update() {
+                    var targetW = \(targetWidth);
+                    var realW = window.innerWidth;
+
+                    if (!realW || realW <= 0) return;
+
+                    var scale = realW / targetW;
+
+                    document.documentElement.style.width = targetW + "px";
+                    document.body.style.width = targetW + "px";
+
+                    document.body.style.transform = "scale(" + scale + ")";
+                    document.body.style.transformOrigin = "top left";
+
+                    var realHeight = document.body.scrollHeight * scale;
+
+                    window.webkit.messageHandlers.resObserver.postMessage({
+                        w: Math.round(targetW),
+                        h: Math.round(realHeight)
+                    });
+                }
+
+                update();
+                window.onresize = update;
+                window.addEventListener("orientationchange", function() {
+                    setTimeout(update, 300);
+                });
+            })();
+            """
+            
+            webView.evaluateJavaScript(js)
+        }
+    }
+    
+    // MARK: - Cookies
+    private func setupCookies(webView: WKWebView) {
+        let store = webView.configuration.websiteDataStore.httpCookieStore
+        let url = urlString.lowercased()
+        
+        func addCookie(name: String, value: String, domain: String) {
+            let props: [HTTPCookiePropertyKey: Any] = [
+                .name: name,
+                .value: value,
+                .domain: domain,
+                .path: "/",
+                .expires: Date(timeIntervalSinceNow: 31536000)
+            ]
+            
+            if let cookie = HTTPCookie(properties: props) {
+                store.setCookie(cookie)
+            }
+        }
+        
+        // 🔥 YouTube
+        if url.contains("youtube.com") {
+            addCookie(name: "SOCS", value: "CAISEwgDEgk4OTk4NzM2MzgaAmVzIAEaBgiA2ZXPBg", domain: ".youtube.com")
+            
+            let resValue =
+                resolution == "4K" ? "2160" :
+                resolution == "2K" ? "1440" :
+                resolution == "1080p" ? "1080" : "720"
+            
+            addCookie(name: "PREF", value: "f4=4000000&res=\(resValue)", domain: ".youtube.com")
+        }
+        
+        // 🔥 Ejemplo genérico
+        if url.contains("orbys.eu") {
+            addCookie(name: "orbys-consent-cookie", value: "true", domain: ".orbys.eu")
+        }
+    }
+}
