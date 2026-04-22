@@ -60,7 +60,8 @@ struct ContentView: View {
             }
             .navigationDestination(isPresented: $showWebView) {
                 WebViewManagerView(urlString: urlText, resolution: selectedResolution)
-                    .id(urlText + selectedResolution) // Fuerza refresco total
+                    // El ID asegura que al volver atrás y entrar con otra config, todo se resetee
+                    .id(urlText + selectedResolution)
             }
         }
     }
@@ -78,9 +79,11 @@ struct WebViewManagerView: View {
             .ignoresSafeArea(.container, edges: .bottom)
             .toolbar {
                 ToolbarItem(placement: .principal) {
-                    Text("\(webWidth) x \(webHeight) PX")
-                        .font(.system(size: 16, weight: .bold, design: .monospaced))
-                        .foregroundColor(.blue)
+                    VStack {
+                        Text("\(webWidth) x \(webHeight) PX")
+                            .font(.system(size: 16, weight: .bold, design: .monospaced))
+                            .foregroundColor(.blue)
+                    }
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
@@ -108,7 +111,7 @@ struct WebViewContainer: UIViewRepresentable {
         let contentController = WKUserContentController()
         contentController.add(context.coordinator, name: "resObserver")
         
-        // 1. Inyección de Viewport inmediata para evitar renderizado móvil inicial
+        // 1. Script inicial: Forzamos el viewport antes de que cargue el DOM
         let scriptSource = """
         var meta = document.createElement('meta');
         meta.name = "viewport";
@@ -126,13 +129,12 @@ struct WebViewContainer: UIViewRepresentable {
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         
-        // User Agent de Windows 10 para asegurar versión Desktop
+        // User Agent potente para evitar redirecciones móviles
         webView.customUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
         
         webView.scrollView.contentInsetAdjustmentBehavior = .never
-        webView.alpha = 0 // Oculto hasta que el zoom esté aplicado
+        webView.alpha = 0 
         
-        // 2. Configurar Cookies ANTES de cargar la URL
         setupCookies(webView: webView)
         
         return webView
@@ -155,18 +157,21 @@ struct WebViewContainer: UIViewRepresentable {
         init(_ parent: WebViewContainer) { self.parent = parent }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-            if let dict = message.body as? [String: Int] {
+            // JS envía números, los tratamos como Double por seguridad y luego Int
+            if let dict = message.body as? [String: Any] {
+                let w = dict["w"] as? Double ?? 0
+                let h = dict["h"] as? Double ?? 0
                 DispatchQueue.main.async {
-                    self.parent.webWidth = dict["w"] ?? 0
-                    self.parent.webHeight = dict["h"] ?? 0
+                    self.parent.webWidth = Int(w)
+                    self.parent.webHeight = Int(h)
                 }
             }
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             applyFinalFixes(webView)
-            // Animación suave para mostrar la web ya escalada
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            // Pequeño delay para que el motor de renderizado termine de escalar
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                 UIView.animate(withDuration: 0.4) { webView.alpha = 1 }
             }
         }
@@ -177,23 +182,31 @@ struct WebViewContainer: UIViewRepresentable {
             
             let js = """
             (function() {
+                // Ajuste de Viewport dinámico basado en el ancho real del dispositivo
                 var meta = document.querySelector('meta[name="viewport"]') || document.createElement('meta');
                 meta.name = "viewport";
-                meta.setAttribute('content', 'width=\(Int(parent.targetWidth)), initial-scale=\(zoom), minimum-scale=\(zoom), maximum-scale=2.0, user-scalable=yes');
+                meta.setAttribute('content', 'width=\(Int(parent.targetWidth)), initial-scale=\(zoom), minimum-scale=\(zoom), maximum-scale=5.0, user-scalable=yes');
                 if(!document.head.contains(meta)) document.head.appendChild(meta);
                 
+                // Estilos para forzar el layout
                 document.documentElement.style.width = '\(Int(parent.targetWidth))px';
                 document.body.style.width = '\(Int(parent.targetWidth))px';
                 document.body.style.overflowX = 'hidden';
 
-                function report() {
+                // Reporte preciso: clientWidth nos da el ancho del área de renderizado
+                window.reportRes = function() {
                     window.webkit.messageHandlers.resObserver.postMessage({
-                        w: window.innerWidth,
-                        h: window.innerHeight
+                        w: document.documentElement.clientWidth,
+                        h: document.documentElement.clientHeight
                     });
-                }
-                window.onresize = report;
-                report();
+                };
+
+                window.onresize = window.reportRes;
+                window.addEventListener('orientationchange', function() {
+                    setTimeout(window.reportRes, 300);
+                });
+                
+                window.reportRes();
             })();
             """
             webView.evaluateJavaScript(js)
@@ -214,17 +227,15 @@ struct WebViewContainer: UIViewRepresentable {
             }
         }
 
-        // Cookies de Orbys
+        // --- BYPASS COOKIES ---
         if url.contains("orbys.eu") {
             addCookie(name: "orbys-consent-cookie", value: "true", domain: ".orbys.eu")
         }
         
-        // Cookies de Marca
         if url.contains("marca.com") {
             addCookie(name: "euconsent-v2", value: "CP-l_sAP-l_sAAHABBENBEsCsAP_AAH_AACiQH5NX_X_fb39j-_59_9t0eY1P9_j77uQzDhfNk-4F3L_W_L8X42M7vJ36pq4KuR4Eu3LBIQFk2JHNKJ7GE5dF2R7ZgWk3vBIQJb2c7E5rH0c", domain: ".marca.com")
         }
         
-        // Cookies de YouTube
         if url.contains("youtube.com") {
             addCookie(name: "SOCS", value: "CAISEwgDEgk4OTk4NzM2MzgaAmVzIAEaBgiA2ZXPBg", domain: ".youtube.com")
             let resValue = resolution == "4K" ? "2160" : (resolution == "2K" ? "1440" : "1080")
