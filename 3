@@ -4,7 +4,7 @@ import WebKit
 // MARK: - Main View
 struct ContentView: View {
     @AppStorage("last_url_saved") private var urlText: String = ""
-    @State private var selectedResolution = "720p"
+    @State private var selectedResolution = "1080p"
     @State private var showWebView = false
     
     let resolutions = ["720p", "1080p", "2K", "4K"]
@@ -59,19 +59,17 @@ struct ContentView: View {
                 .padding(.horizontal).padding(.bottom, 30)
             }
             .navigationDestination(isPresented: $showWebView) {
-                // El .id fuerza a SwiftUI a recrear la vista y limpiar la resolución vieja
                 WebViewManagerView(urlString: urlText, resolution: selectedResolution)
-                    .id(urlText + selectedResolution)
+                    .id(urlText + selectedResolution) // Fuerza refresco total
             }
         }
     }
 }
 
-// MARK: - Manager View (Contiene la Toolbar)
+// MARK: - Manager View
 struct WebViewManagerView: View {
     let urlString: String
     let resolution: String
-    
     @State private var webWidth: Int = 0
     @State private var webHeight: Int = 0
 
@@ -80,9 +78,8 @@ struct WebViewManagerView: View {
             .ignoresSafeArea(.container, edges: .bottom)
             .toolbar {
                 ToolbarItem(placement: .principal) {
-                    // Muestra los píxeles reales reportados por JS en tiempo real
                     Text("\(webWidth) x \(webHeight) PX")
-                        .font(.system(size: 18, weight: .bold, design: .monospaced))
+                        .font(.system(size: 16, weight: .bold, design: .monospaced))
                         .foregroundColor(.blue)
                 }
             }
@@ -97,7 +94,7 @@ struct WebViewContainer: UIViewRepresentable {
     @Binding var webWidth: Int
     @Binding var webHeight: Int
     
-    private var targetWidth: CGFloat {
+    var targetWidth: CGFloat {
         switch resolution {
         case "720p": return 1280
         case "1080p": return 1920
@@ -111,35 +108,43 @@ struct WebViewContainer: UIViewRepresentable {
         let contentController = WKUserContentController()
         contentController.add(context.coordinator, name: "resObserver")
         
+        // 1. Inyección de Viewport inmediata para evitar renderizado móvil inicial
+        let scriptSource = """
+        var meta = document.createElement('meta');
+        meta.name = "viewport";
+        meta.content = "width=\(Int(targetWidth)), initial-scale=0.1";
+        document.getElementsByTagName('head')[0].appendChild(meta);
+        """
+        let userScript = WKUserScript(source: scriptSource, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        contentController.addUserScript(userScript)
+        
         let config = WKWebViewConfiguration()
         config.userContentController = contentController
         config.defaultWebpagePreferences.preferredContentMode = .desktop
+        config.allowsInlineMediaPlayback = true
         
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         
-        // User Agent de Escritorio (Windows) para evitar versiones móviles
-        webView.customUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+        // User Agent de Windows 10 para asegurar versión Desktop
+        webView.customUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
         
-        webView.alpha = 0
         webView.scrollView.contentInsetAdjustmentBehavior = .never
+        webView.alpha = 0 // Oculto hasta que el zoom esté aplicado
         
-        setupBypassAndResolutionCookies(url: urlString, webView: webView)
+        // 2. Configurar Cookies ANTES de cargar la URL
+        setupCookies(webView: webView)
         
         return webView
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
-        var finalUrl = urlString.trimmingCharacters(in: .whitespaces)
-        if !finalUrl.lowercased().hasPrefix("http") { finalUrl = "https://\(finalUrl)" }
-        
-        if uiView.url == nil, let url = URL(string: finalUrl) {
-            uiView.load(URLRequest(url: url))
-        }
-        
-        // Re-ajustar escala si SwiftUI actualiza la vista (p. ej. rotación)
-        DispatchQueue.main.async {
-            context.coordinator.applyScaleAndReport(uiView)
+        if uiView.url == nil {
+            var finalUrl = urlString.trimmingCharacters(in: .whitespaces)
+            if !finalUrl.lowercased().hasPrefix("http") { finalUrl = "https://\(finalUrl)" }
+            if let url = URL(string: finalUrl) {
+                uiView.load(URLRequest(url: url))
+            }
         }
     }
 
@@ -149,7 +154,6 @@ struct WebViewContainer: UIViewRepresentable {
         var parent: WebViewContainer
         init(_ parent: WebViewContainer) { self.parent = parent }
 
-        // Recibe los datos de window.innerWidth/Height desde la web
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             if let dict = message.body as? [String: Int] {
                 DispatchQueue.main.async {
@@ -160,46 +164,35 @@ struct WebViewContainer: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            applyScaleAndReport(webView)
-            // Esperamos un poco para asegurar que el zoom se asiente antes de mostrar la web
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            applyFinalFixes(webView)
+            // Animación suave para mostrar la web ya escalada
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 UIView.animate(withDuration: 0.4) { webView.alpha = 1 }
             }
         }
 
-        func applyScaleAndReport(_ webView: WKWebView) {
-            let screenWidth = webView.frame.width > 0 ? webView.frame.width : UIScreen.main.bounds.width
+        func applyFinalFixes(_ webView: WKWebView) {
+            let screenWidth = webView.bounds.width > 0 ? webView.bounds.width : UIScreen.main.bounds.width
             let zoom = screenWidth / parent.targetWidth
             
             let js = """
             (function() {
-                // Ajuste de Viewport
                 var meta = document.querySelector('meta[name="viewport"]') || document.createElement('meta');
                 meta.name = "viewport";
-                meta.setAttribute('content', 'width=\(Int(parent.targetWidth)), initial-scale=\(zoom), minimum-scale=\(zoom), maximum-scale=5.0, user-scalable=yes');
+                meta.setAttribute('content', 'width=\(Int(parent.targetWidth)), initial-scale=\(zoom), minimum-scale=\(zoom), maximum-scale=2.0, user-scalable=yes');
                 if(!document.head.contains(meta)) document.head.appendChild(meta);
                 
-                // Ajuste de Estilos
                 document.documentElement.style.width = '\(Int(parent.targetWidth))px';
                 document.body.style.width = '\(Int(parent.targetWidth))px';
                 document.body.style.overflowX = 'hidden';
-                document.body.style.webkitTextSizeAdjust = 'none';
-                
-                // Función de reporte en tiempo real
+
                 function report() {
                     window.webkit.messageHandlers.resObserver.postMessage({
                         w: window.innerWidth,
                         h: window.innerHeight
                     });
                 }
-                
-                // Reportar en cambios de tamaño y rotación
                 window.onresize = report;
-                window.addEventListener('orientationchange', function() {
-                    setTimeout(report, 100);
-                    setTimeout(report, 600);
-                });
-
                 report();
             })();
             """
@@ -207,24 +200,35 @@ struct WebViewContainer: UIViewRepresentable {
         }
     }
 
-    private func setupBypassAndResolutionCookies(url: String, webView: WKWebView) {
+    private func setupCookies(webView: WKWebView) {
         let cookieStore = webView.configuration.websiteDataStore.httpCookieStore
-        func setCookie(name: String, value: String, domain: String) {
+        let url = urlString.lowercased()
+        
+        func addCookie(name: String, value: String, domain: String) {
             let props: [HTTPCookiePropertyKey: Any] = [
                 .name: name, .value: value, .domain: domain, .path: "/",
                 .expires: Date(timeIntervalSinceNow: 31536000)
             ]
-            if let cookie = HTTPCookie(properties: props) { cookieStore.setCookie(cookie) }
+            if let cookie = HTTPCookie(properties: props) {
+                cookieStore.setCookie(cookie)
+            }
+        }
+
+        // Cookies de Orbys
+        if url.contains("orbys.eu") {
+            addCookie(name: "orbys-consent-cookie", value: "true", domain: ".orbys.eu")
         }
         
-        if url.contains("orbys.eu") { setCookie(name: "orbys-consent-cookie", value: "true", domain: ".orbys.eu") }
+        // Cookies de Marca
         if url.contains("marca.com") {
-            setCookie(name: "euconsent-v2", value: "CP-l_sAP-l_sAAHABBENBEsCsAP_AAH_AACiQH5NX_X_fb39j-_59_9t0eY1P9_j77uQzDhfNk-4F3L_W_L8X42M7vJ36pq4KuR4Eu3LBIQFk2JHNKJ7GE5dF2R7ZgWk3vBIQJb2c7E5rH0c", domain: ".marca.com")
+            addCookie(name: "euconsent-v2", value: "CP-l_sAP-l_sAAHABBENBEsCsAP_AAH_AACiQH5NX_X_fb39j-_59_9t0eY1P9_j77uQzDhfNk-4F3L_W_L8X42M7vJ36pq4KuR4Eu3LBIQFk2JHNKJ7GE5dF2R7ZgWk3vBIQJb2c7E5rH0c", domain: ".marca.com")
         }
+        
+        // Cookies de YouTube
         if url.contains("youtube.com") {
-            setCookie(name: "SOCS", value: "CAISEwgDEgk4OTk4NzM2MzgaAmVzIAEaBgiA2ZXPBg", domain: ".youtube.com")
+            addCookie(name: "SOCS", value: "CAISEwgDEgk4OTk4NzM2MzgaAmVzIAEaBgiA2ZXPBg", domain: ".youtube.com")
             let resValue = resolution == "4K" ? "2160" : (resolution == "2K" ? "1440" : "1080")
-            setCookie(name: "PREF", value: "f4=4000000&res=\(resValue)", domain: ".youtube.com")
+            addCookie(name: "PREF", value: "f4=4000000&res=\(resValue)", domain: ".youtube.com")
         }
     }
 }
