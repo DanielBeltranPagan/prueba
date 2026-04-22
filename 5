@@ -174,13 +174,7 @@ struct WebViewContainer: UIViewRepresentable {
                 function update() {
                     var targetW = \(tW);
 
-                    // Ancho real del dispositivo (vertical u horizontal)
-                    var deviceW = window.innerWidth;
-
-                    // Escala necesaria para simular la resolución
-                    var scale = deviceW / targetW;
-
-                    // Crear o actualizar meta viewport
+                    // Viewport normal (sin zoom-out)
                     var meta = document.querySelector('meta[name="viewport"]');
                     if (!meta) {
                         meta = document.createElement('meta');
@@ -189,17 +183,15 @@ struct WebViewContainer: UIViewRepresentable {
                     }
 
                     meta.setAttribute('content',
-                        'width=' + targetW +
-                        ', initial-scale=' + scale +
-                        ', minimum-scale=' + scale +
-                        ', maximum-scale=' + scale +
-                        ', user-scalable=no'
+                        'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no'
                     );
 
-                    // Medir tamaño del contenido real
+                    // Simulación interna de resolución
+                    var scaleFactor = targetW / window.innerWidth;
+
                     window.webkit.messageHandlers.resObserver.postMessage({
                         w: Math.round(targetW),
-                        h: Math.round(document.documentElement.scrollHeight / scale)
+                        h: Math.round(document.documentElement.scrollHeight * scaleFactor)
                     });
                 }
 
