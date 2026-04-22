@@ -78,7 +78,6 @@ struct WebViewManagerView: View {
             .ignoresSafeArea(.container, edges: .bottom)
             .toolbar {
                 ToolbarItem(placement: .principal) {
-                    // Este indicador ahora mostrará el área visible escalada
                     HStack {
                         Image(systemName: "viewfinder")
                         Text("\(webWidth) x \(webHeight) PX")
@@ -98,7 +97,6 @@ struct WebViewContainer: UIViewRepresentable {
     @Binding var webWidth: Int
     @Binding var webHeight: Int
     
-    // Definimos los anchos estándar de escritorio
     var targetWidth: CGFloat {
         switch resolution {
         case "720p":  return 1280
@@ -120,15 +118,11 @@ struct WebViewContainer: UIViewRepresentable {
         
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
-        
-        // User Agent de Chrome Desktop para evitar versiones móviles
         webView.customUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-        
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.alpha = 0 
         
         setupCookies(webView: webView)
-        
         return webView
     }
 
@@ -140,7 +134,6 @@ struct WebViewContainer: UIViewRepresentable {
                 uiView.load(URLRequest(url: url))
             }
         }
-        // Forzamos el ajuste de escala si SwiftUI redibuja (por ejemplo, al rotar)
         context.coordinator.applyFinalFixes(uiView)
     }
 
@@ -152,18 +145,21 @@ struct WebViewContainer: UIViewRepresentable {
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             if let dict = message.body as? [String: Any] {
-                let w = dict["w"] as? Double ?? 0
-                let h = dict["h"] as? Double ?? 0
-                DispatchQueue.main.async {
-                    self.parent.webWidth = Int(w)
-                    self.parent.webHeight = Int(h)
+                // CORRECCIÓN 1: Validar que los números sean finitos antes de convertir a Int
+                let wDouble = dict["w"] as? Double ?? 0
+                let hDouble = dict["h"] as? Double ?? 0
+                
+                if wDouble.isFinite && hDouble.isFinite {
+                    DispatchQueue.main.async {
+                        self.parent.webWidth = Int(wDouble)
+                        self.parent.webHeight = Int(hDouble)
+                    }
                 }
             }
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             applyFinalFixes(webView)
-            // Animación suave de aparición
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                 UIView.animate(withDuration: 0.4) { webView.alpha = 1 }
             }
@@ -176,15 +172,10 @@ struct WebViewContainer: UIViewRepresentable {
             (function() {
                 function update() {
                     var targetW = \(tW);
-                    var deviceW = window.screen.width;
-                    // Si estamos en horizontal, el ancho disponible es el largo de la pantalla
-                    if (window.orientation === 90 || window.orientation === -90) {
-                        deviceW = Math.max(window.screen.width, window.screen.height);
-                    } else {
-                        deviceW = Math.min(window.screen.width, window.screen.height);
-                    }
-                    
-                    var scale = window.innerWidth / targetW;
+                    var currentWinW = window.innerWidth;
+                    if (!currentWinW || currentWinW <= 0) return;
+
+                    var scale = currentWinW / targetW;
 
                     var meta = document.querySelector('meta[name="viewport"]') || document.createElement('meta');
                     meta.name = "viewport";
@@ -194,17 +185,19 @@ struct WebViewContainer: UIViewRepresentable {
                     document.documentElement.style.width = targetW + 'px';
                     document.body.style.width = targetW + 'px';
 
-                    // Reportamos el área VISIBLE (Viewport) escalada
+                    // CORRECCIÓN 2: Evitar división por cero o escala inválida
+                    var safeScale = (scale > 0) ? scale : 1;
+
                     window.webkit.messageHandlers.resObserver.postMessage({
-                        w: Math.round(window.innerWidth / scale),
-                        h: Math.round(window.innerHeight / scale)
+                        w: Math.round(window.innerWidth / safeScale),
+                        h: Math.round(window.innerHeight / safeScale)
                     });
                 }
 
                 update();
                 window.onresize = update;
                 window.addEventListener("orientationchange", function() {
-                    setTimeout(update, 200);
+                    setTimeout(update, 300);
                 });
             })();
             """
