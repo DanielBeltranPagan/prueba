@@ -62,17 +62,43 @@ struct ContentView: View {
                 .padding(.bottom, 30)
             }
             .navigationDestination(isPresented: $showWebView) {
-                // CAMBIO AQUÍ: Quitamos ignoresSafeArea y añadimos un título 
-                // para que la barra de navegación empuje el contenido hacia abajo.
-                WebViewContainer(urlString: urlText, resolution: selectedResolution)
-                    .navigationTitle(selectedResolution)
-                    .navigationBarTitleDisplayMode(.inline)
+                // Vista del WebView con el indicador de resolución superpuesto
+                ZStack(alignment: .top) {
+                    WebViewContainer(urlString: urlText, resolution: selectedResolution)
+                        .ignoresSafeArea(.container, edges: .bottom)
+                    
+                    // Indicador de resolución en tiempo real
+                    GeometryReader { geo in
+                        let screenScale = UIScreen.main.scale
+                        let pxWidth = Int(geo.size.width * screenScale)
+                        let pxHeight = Int(geo.size.height * screenScale)
+                        
+                        HStack {
+                            Spacer()
+                            VStack(alignment: .trailing, spacing: 2) {
+                                Text("Render: \(Int(geo.size.width))x\(Int(geo.size.height)) pts")
+                                Text("Física: \(pxWidth)x\(pxHeight) px")
+                                    .bold()
+                            }
+                            .font(.system(size: 10, design: .monospaced))
+                            .padding(8)
+                            .background(.black.opacity(0.7))
+                            .foregroundColor(.white)
+                            .cornerRadius(8)
+                            .padding(.top, 10)
+                            .padding(.trailing, 10)
+                        }
+                    }
+                    .allowsHitTesting(false) // Permite tocar la web a través del indicador
+                }
+                .navigationTitle(selectedResolution)
+                .navigationBarTitleDisplayMode(.inline)
             }
         }
     }
 }
 
-// MARK: - EL RESTO DEL CÓDIGO (WebViewContainer, Coordinator, etc.) SE MANTIENE IGUAL
+// MARK: - WebView Container
 struct WebViewContainer: UIViewRepresentable {
     let urlString: String
     let resolution: String
@@ -96,7 +122,6 @@ struct WebViewContainer: UIViewRepresentable {
         webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
         
         webView.alpha = 0 
-        // Importante: Aquí permitimos que iOS maneje los insets automáticamente
         webView.scrollView.contentInsetAdjustmentBehavior = .always
         
         setupBypassAndResolutionCookies(url: urlString, webView: webView)
@@ -175,6 +200,5 @@ struct WebViewContainer: UIViewRepresentable {
         }
     }
 }
-
 
 // setCookie(name: "orbys-region-cookie", value: "emea", domain: ".orbys.eu")
