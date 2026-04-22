@@ -120,7 +120,7 @@ struct WebViewContainer: UIViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.customUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
         webView.scrollView.contentInsetAdjustmentBehavior = .never
-        webView.alpha = 0 
+        webView.alpha = 0
         
         setupCookies(webView: webView)
         return webView
@@ -129,7 +129,9 @@ struct WebViewContainer: UIViewRepresentable {
     func updateUIView(_ uiView: WKWebView, context: Context) {
         if uiView.url == nil {
             var finalUrl = urlString.trimmingCharacters(in: .whitespaces)
-            if !finalUrl.lowercased().hasPrefix("http") { finalUrl = "https://\(finalUrl)" }
+            if !finalUrl.lowercased().hasPrefix("http") {
+                finalUrl = "https://\(finalUrl)"
+            }
             if let url = URL(string: finalUrl) {
                 uiView.load(URLRequest(url: url))
             }
@@ -145,15 +147,12 @@ struct WebViewContainer: UIViewRepresentable {
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             if let dict = message.body as? [String: Any] {
-                // CORRECCIÓN 1: Validar que los números sean finitos antes de convertir a Int
-                let wDouble = dict["w"] as? Double ?? 0
-                let hDouble = dict["h"] as? Double ?? 0
+                let w = dict["w"] as? Int ?? 0
+                let h = dict["h"] as? Int ?? 0
                 
-                if wDouble.isFinite && hDouble.isFinite {
-                    DispatchQueue.main.async {
-                        self.parent.webWidth = Int(wDouble)
-                        self.parent.webHeight = Int(hDouble)
-                    }
+                DispatchQueue.main.async {
+                    self.parent.webWidth = w
+                    self.parent.webHeight = h
                 }
             }
         }
@@ -161,7 +160,9 @@ struct WebViewContainer: UIViewRepresentable {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             applyFinalFixes(webView)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                UIView.animate(withDuration: 0.4) { webView.alpha = 1 }
+                UIView.animate(withDuration: 0.4) {
+                    webView.alpha = 1
+                }
             }
         }
 
@@ -175,22 +176,29 @@ struct WebViewContainer: UIViewRepresentable {
                     var currentWinW = window.innerWidth;
                     if (!currentWinW || currentWinW <= 0) return;
 
-                    var scale = currentWinW / targetW;
+                    // ✅ FIX 1: scale correcto
+                    var scale = targetW / currentWinW;
 
                     var meta = document.querySelector('meta[name="viewport"]') || document.createElement('meta');
                     meta.name = "viewport";
-                    meta.setAttribute('content', 'width=' + targetW + ', initial-scale=' + scale + ', minimum-scale=' + scale + ', maximum-scale=5.0, user-scalable=yes');
-                    if(!document.head.contains(meta)) document.head.appendChild(meta);
-                    
+                    meta.setAttribute('content',
+                        'width=' + targetW +
+                        ', initial-scale=' + scale +
+                        ', minimum-scale=' + scale +
+                        ', maximum-scale=5.0, user-scalable=yes'
+                    );
+
+                    if (!document.head.contains(meta)) {
+                        document.head.appendChild(meta);
+                    }
+
                     document.documentElement.style.width = targetW + 'px';
                     document.body.style.width = targetW + 'px';
 
-                    // CORRECCIÓN 2: Evitar división por cero o escala inválida
-                    var safeScale = (scale > 0) ? scale : 1;
-
+                    // ✅ FIX 2: medir tamaño REAL (no viewport roto)
                     window.webkit.messageHandlers.resObserver.postMessage({
-                        w: Math.round(window.innerWidth / safeScale),
-                        h: Math.round(window.innerHeight / safeScale)
+                        w: Math.round(document.documentElement.clientWidth),
+                        h: Math.round(document.documentElement.clientHeight)
                     });
                 }
 
@@ -211,7 +219,10 @@ struct WebViewContainer: UIViewRepresentable {
         
         func addCookie(name: String, value: String, domain: String) {
             let props: [HTTPCookiePropertyKey: Any] = [
-                .name: name, .value: value, .domain: domain, .path: "/",
+                .name: name,
+                .value: value,
+                .domain: domain,
+                .path: "/",
                 .expires: Date(timeIntervalSinceNow: 31536000)
             ]
             if let cookie = HTTPCookie(properties: props) {
@@ -219,18 +230,13 @@ struct WebViewContainer: UIViewRepresentable {
             }
         }
 
-        if url.contains("orbys.eu") {
-            addCookie(name: "orbys-consent-cookie", value: "true", domain: ".orbys.eu")
-        }
-        
-        if url.contains("marca.com") {
-            addCookie(name: "euconsent-v2", value: "CP-l_sAP-l_sAAHABBENBEsCsAP_AAH_AACiQH5NX_X_fb39j-_59_9t0eY1P9_j77uQzDhfNk-4F3L_W_L8X42M7vJ36pq4KuR4Eu3LBIQFk2JHNKJ7GE5dF2R7ZgWk3vBIQJb2c7E5rH0c", domain: ".marca.com")
-        }
-        
         if url.contains("youtube.com") {
             addCookie(name: "SOCS", value: "CAISEwgDEgk4OTk4NzM2MzgaAmVzIAEaBgiA2ZXPBg", domain: ".youtube.com")
             let resValue = resolution == "4K" ? "2160" : (resolution == "2K" ? "1440" : "1080")
             addCookie(name: "PREF", value: "f4=4000000&res=\(resValue)", domain: ".youtube.com")
+        }
+        if url.contains("orbys.eu") {
+            addCookie(name: "orbys-consent-cookie", value: "true", domain: ".orbys.eu")
         }
     }
 }
