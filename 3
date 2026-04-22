@@ -62,36 +62,24 @@ struct ContentView: View {
                 .padding(.bottom, 30)
             }
             .navigationDestination(isPresented: $showWebView) {
-                // Vista del WebView con el indicador de resolución superpuesto
-                ZStack(alignment: .top) {
+                GeometryReader { geo in
+                    let screenScale = UIScreen.main.scale
+                    let currentRes = "\(Int(geo.size.width * screenScale))x\(Int(geo.size.height * screenScale)) px"
+                    
                     WebViewContainer(urlString: urlText, resolution: selectedResolution)
                         .ignoresSafeArea(.container, edges: .bottom)
-                    
-                    // Indicador de resolución en tiempo real
-                    GeometryReader { geo in
-                        let screenScale = UIScreen.main.scale
-                        let pxWidth = Int(geo.size.width * screenScale)
-                        let pxHeight = Int(geo.size.height * screenScale)
-                        
-                        HStack {
-                            Spacer()
-                            VStack(alignment: .trailing, spacing: 2) {
-                                Text("Render: \(Int(geo.size.width))x\(Int(geo.size.height)) pts")
-                                Text("Física: \(pxWidth)x\(pxHeight) px")
-                                    .bold()
+                        // Inyectamos la info en la Toolbar (TopAppBar)
+                        .toolbar {
+                            ToolbarItem(placement: .principal) {
+                                VStack {
+                                    Text(selectedResolution).font(.headline)
+                                    Text(currentRes)
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundColor(.secondary)
+                                }
                             }
-                            .font(.system(size: 10, design: .monospaced))
-                            .padding(8)
-                            .background(.black.opacity(0.7))
-                            .foregroundColor(.white)
-                            .cornerRadius(8)
-                            .padding(.top, 10)
-                            .padding(.trailing, 10)
                         }
-                    }
-                    .allowsHitTesting(false) // Permite tocar la web a través del indicador
                 }
-                .navigationTitle(selectedResolution)
                 .navigationBarTitleDisplayMode(.inline)
             }
         }
@@ -123,9 +111,7 @@ struct WebViewContainer: UIViewRepresentable {
         
         webView.alpha = 0 
         webView.scrollView.contentInsetAdjustmentBehavior = .always
-        
         setupBypassAndResolutionCookies(url: urlString, webView: webView)
-        
         return webView
     }
 
@@ -133,7 +119,13 @@ struct WebViewContainer: UIViewRepresentable {
         var finalUrl = urlString.trimmingCharacters(in: .whitespaces)
         if !finalUrl.lowercased().hasPrefix("http") { finalUrl = "https://\(finalUrl)" }
         guard let url = URL(string: finalUrl) else { return }
+        
         if uiView.url == nil { uiView.load(URLRequest(url: url)) }
+        
+        // Ajustar zoom al rotar (tiempo real)
+        DispatchQueue.main.async {
+            context.coordinator.applyZoom(to: uiView)
+        }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -143,7 +135,14 @@ struct WebViewContainer: UIViewRepresentable {
         init(_ parent: WebViewContainer) { self.parent = parent }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            let screenWidth = UIScreen.main.bounds.width
+            applyZoom(to: webView)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                UIView.animate(withDuration: 0.4) { webView.alpha = 1 }
+            }
+        }
+        
+        func applyZoom(to webView: WKWebView) {
+            let screenWidth = webView.frame.width > 0 ? webView.frame.width : UIScreen.main.bounds.width
             let zoomFactor = screenWidth / parent.targetWidth
             
             let js = """
@@ -164,13 +163,7 @@ struct WebViewContainer: UIViewRepresentable {
             webView.evaluateJavaScript(js) { _, _ in
                 webView.scrollView.minimumZoomScale = zoomFactor
                 webView.scrollView.maximumZoomScale = zoomFactor
-                webView.scrollView.setZoomScale(zoomFactor, animated: false)
-                
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    UIView.animate(withDuration: 0.4) {
-                        webView.alpha = 1
-                    }
-                }
+                webView.scrollView.setZoomScale(zoomFactor, animated: true)
             }
         }
     }
@@ -185,13 +178,9 @@ struct WebViewContainer: UIViewRepresentable {
             if let cookie = HTTPCookie(properties: props) { cookieStore.setCookie(cookie) }
         }
         
-        if url.contains("orbys.eu") {
-            setCookie(name: "orbys-consent-cookie", value: "true", domain: ".orbys.eu")
-        }
-        
+        if url.contains("orbys.eu") { setCookie(name: "orbys-consent-cookie", value: "true", domain: ".orbys.eu") }
         if url.contains("marca.com") {
-            let d = ".marca.com"
-            setCookie(name: "euconsent-v2", value: "CP-l_sAP-l_sAAHABBENBEsCsAP_AAH_AACiQH5NX_X_fb39j-_59_9t0eY1P9_j77uQzDhfNk-4F3L_W_L8X42M7vJ36pq4KuR4Eu3LBIQFk2JHNKJ7GE5dF2R7ZgWk3vBIQJb2c7E5rH0c", domain: d)
+            setCookie(name: "euconsent-v2", value: "CP-l_sAP-l_sAAHABBENBEsCsAP_AAH_AACiQH5NX_X_fb39j-_59_9t0eY1P9_j77uQzDhfNk-4F3L_W_L8X42M7vJ36pq4KuR4Eu3LBIQFk2JHNKJ7GE5dF2R7ZgWk3vBIQJb2c7E5rH0c", domain: ".marca.com")
         }
         if url.contains("youtube.com") {
             setCookie(name: "SOCS", value: "CAISEwgDEgk4OTk4NzM2MzgaAmVzIAEaBgiA2ZXPBg", domain: ".youtube.com")
@@ -200,5 +189,6 @@ struct WebViewContainer: UIViewRepresentable {
         }
     }
 }
+
 
 // setCookie(name: "orbys-region-cookie", value: "emea", domain: ".orbys.eu")
