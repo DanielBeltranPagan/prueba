@@ -66,19 +66,22 @@ struct ContentView: View {
                     let screenScale = UIScreen.main.scale
                     let currentRes = "\(Int(geo.size.width * screenScale))x\(Int(geo.size.height * screenScale)) px"
                     
-                    WebViewContainer(urlString: urlText, resolution: selectedResolution)
-                        .ignoresSafeArea(.container, edges: .bottom)
-                        // Inyectamos la info en la Toolbar (TopAppBar)
-                        .toolbar {
-                            ToolbarItem(placement: .principal) {
-                                VStack {
-                                    Text(selectedResolution).font(.headline)
-                                    Text(currentRes)
-                                        .font(.system(size: 10, design: .monospaced))
-                                        .foregroundColor(.secondary)
-                                }
+                    ZStack {
+                        WebViewContainer(urlString: urlText, resolution: selectedResolution)
+                            .ignoresSafeArea(.container, edges: .bottom)
+                        
+                        // Opcional: Puedes poner un ProgressView aquí si la web tarda mucho
+                    }
+                    .toolbar {
+                        ToolbarItem(placement: .principal) {
+                            VStack {
+                                Text(selectedResolution).font(.headline)
+                                Text(currentRes)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(.secondary)
                             }
                         }
+                    }
                 }
                 .navigationBarTitleDisplayMode(.inline)
             }
@@ -109,8 +112,10 @@ struct WebViewContainer: UIViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
         
+        // Empezamos totalmente invisible
         webView.alpha = 0 
         webView.scrollView.contentInsetAdjustmentBehavior = .always
+        
         setupBypassAndResolutionCookies(url: urlString, webView: webView)
         return webView
     }
@@ -122,9 +127,9 @@ struct WebViewContainer: UIViewRepresentable {
         
         if uiView.url == nil { uiView.load(URLRequest(url: url)) }
         
-        // Ajustar zoom al rotar (tiempo real)
+        // Recalcular al rotar
         DispatchQueue.main.async {
-            context.coordinator.applyZoom(to: uiView)
+            context.coordinator.applyZoom(to: uiView, forceShow: false)
         }
     }
 
@@ -135,13 +140,11 @@ struct WebViewContainer: UIViewRepresentable {
         init(_ parent: WebViewContainer) { self.parent = parent }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            applyZoom(to: webView)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                UIView.animate(withDuration: 0.4) { webView.alpha = 1 }
-            }
+            // Cuando la web carga, aplicamos zoom y luego mostramos
+            applyZoom(to: webView, forceShow: true)
         }
         
-        func applyZoom(to webView: WKWebView) {
+        func applyZoom(to webView: WKWebView, forceShow: Bool) {
             let screenWidth = webView.frame.width > 0 ? webView.frame.width : UIScreen.main.bounds.width
             let zoomFactor = screenWidth / parent.targetWidth
             
@@ -163,7 +166,17 @@ struct WebViewContainer: UIViewRepresentable {
             webView.evaluateJavaScript(js) { _, _ in
                 webView.scrollView.minimumZoomScale = zoomFactor
                 webView.scrollView.maximumZoomScale = zoomFactor
-                webView.scrollView.setZoomScale(zoomFactor, animated: true)
+                webView.scrollView.setZoomScale(zoomFactor, animated: false)
+                
+                // Solo si es la carga inicial o forzada, animamos la aparición
+                if forceShow {
+                    // Esperamos 0.5 segundos extra para asegurar que el motor de renderizado de WebKit se estabilice
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        UIView.animate(withDuration: 0.5) {
+                            webView.alpha = 1
+                        }
+                    }
+                }
             }
         }
     }
