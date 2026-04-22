@@ -63,8 +63,8 @@ struct ContentView: View {
             }
             .navigationDestination(isPresented: $showWebView) {
                 GeometryReader { geo in
-                    // Cálculo de píxeles reales (Ancho x Alto)
                     let screenScale = UIScreen.main.scale
+                    // Estos son los píxeles reales que el dispositivo está usando para dibujar
                     let pixelWidth = Int(geo.size.width * screenScale)
                     let pixelHeight = Int(geo.size.height * screenScale)
                     
@@ -72,10 +72,8 @@ struct ContentView: View {
                         .ignoresSafeArea(.container, edges: .bottom)
                         .toolbar {
                             ToolbarItem(placement: .principal) {
-                                // Solo mostramos los píxeles en grande y claro
                                 Text("\(pixelWidth) x \(pixelHeight) PX")
                                     .font(.system(size: 18, weight: .bold, design: .monospaced))
-                                    .foregroundColor(.primary)
                             }
                         }
                 }
@@ -92,25 +90,28 @@ struct WebViewContainer: UIViewRepresentable {
     
     private var targetWidth: CGFloat {
         switch resolution {
-        case "720p": return 720
-        case "1080p": return 1280
+        case "720p": return 1280  // Ancho estándar HD
+        case "1080p": return 1920 // Full HD
         case "2K": return 2560
         case "4K": return 3840
-        default: return 1280
+        default: return 1920
         }
     }
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
+        // Forzamos modo escritorio a nivel de configuración
         config.defaultWebpagePreferences.preferredContentMode = .desktop
         
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
-        webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+        
+        // User Agent de Chrome Desktop para que la web no intente enviar la versión móvil
+        webView.customUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         
         webView.alpha = 0 
-        webView.scrollView.contentInsetAdjustmentBehavior = .always
-        setupBypassAndResolutionCookies(url: urlString, webView: webView)
+        webView.scrollView.contentInsetAdjustmentBehavior = .never // Evita saltos de la barra de estado
+        
         return webView
     }
 
@@ -121,8 +122,9 @@ struct WebViewContainer: UIViewRepresentable {
         
         if uiView.url == nil { uiView.load(URLRequest(url: url)) }
         
+        // Re-ajuste en cada actualización (rotación)
         DispatchQueue.main.async {
-            context.coordinator.applyZoom(to: uiView, forceShow: false)
+            context.coordinator.applyRobustScale(to: uiView)
         }
     }
 
@@ -133,13 +135,22 @@ struct WebViewContainer: UIViewRepresentable {
         init(_ parent: WebViewContainer) { self.parent = parent }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            applyZoom(to: webView, forceShow: true)
+            applyRobustScale(to: webView)
+            
+            // Retraso para que el motor de renderizado procese el JS de escalado
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                UIView.animate(withDuration: 0.4) { webView.alpha = 1 }
+            }
         }
         
-        func applyZoom(to webView: WKWebView, forceShow: Bool) {
+        func applyRobustScale(to webView: WKWebView) {
             let screenWidth = webView.frame.width > 0 ? webView.frame.width : UIScreen.main.bounds.width
-            let zoomFactor = screenWidth / parent.targetWidth
+            let scale = screenWidth / parent.targetWidth
             
+            // Este script hace tres cosas:
+            // 1. Fuerza el viewport al ancho objetivo (ej: 1920)
+            // 2. Escala el documento entero para que quepa en la pantalla del iPhone
+            // 3. Desactiva el ajuste automático de texto de iOS
             let js = """
             (function() {
                 var meta = document.querySelector('meta[name="viewport"]');
@@ -148,45 +159,16 @@ struct WebViewContainer: UIViewRepresentable {
                     meta.name = "viewport"; 
                     document.head.appendChild(meta); 
                 }
-                meta.setAttribute('content', 'width=\(parent.targetWidth), initial-scale=\(zoomFactor), minimum-scale=\(zoomFactor), maximum-scale=\(zoomFactor)');
-                document.body.style.width = '\(parent.targetWidth)px';
-                document.documentElement.style.width = '\(parent.targetWidth)px';
+                meta.setAttribute('content', 'width=\(Int(parent.targetWidth)), initial-scale=\(scale), minimum-scale=\(scale), maximum-scale=5.0');
+                
+                document.documentElement.style.width = '\(Int(parent.targetWidth))px';
+                document.body.style.width = '\(Int(parent.targetWidth))px';
+                document.documentElement.style.zoom = "\(scale)";
                 document.body.style.webkitTextSizeAdjust = 'none';
             })();
             """
             
-            webView.evaluateJavaScript(js) { _, _ in
-                webView.scrollView.minimumZoomScale = zoomFactor
-                webView.scrollView.maximumZoomScale = zoomFactor
-                webView.scrollView.setZoomScale(zoomFactor, animated: false)
-                
-                if forceShow {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                        UIView.animate(withDuration: 0.4) { webView.alpha = 1 }
-                    }
-                }
-            }
-        }
-    }
-
-    private func setupBypassAndResolutionCookies(url: String, webView: WKWebView) {
-        let cookieStore = webView.configuration.websiteDataStore.httpCookieStore
-        func setCookie(name: String, value: String, domain: String) {
-            let props: [HTTPCookiePropertyKey: Any] = [
-                .name: name, .value: value, .domain: domain, .path: "/",
-                .expires: Date(timeIntervalSinceNow: 31536000)
-            ]
-            if let cookie = HTTPCookie(properties: props) { cookieStore.setCookie(cookie) }
-        }
-        
-        if url.contains("orbys.eu") { setCookie(name: "orbys-consent-cookie", value: "true", domain: ".orbys.eu") }
-        if url.contains("marca.com") {
-            setCookie(name: "euconsent-v2", value: "CP-l_sAP-l_sAAHABBENBEsCsAP_AAH_AACiQH5NX_X_fb39j-_59_9t0eY1P9_j77uQzDhfNk-4F3L_W_L8X42M7vJ36pq4KuR4Eu3LBIQFk2JHNKJ7GE5dF2R7ZgWk3vBIQJb2c7E5rH0c", domain: ".marca.com")
-        }
-        if url.contains("youtube.com") {
-            setCookie(name: "SOCS", value: "CAISEwgDEgk4OTk4NzM2MzgaAmVzIAEaBgiA2ZXPBg", domain: ".youtube.com")
-            let resValue = resolution == "4K" ? "2160" : (resolution == "2K" ? "1440" : "1080")
-            setCookie(name: "PREF", value: "f4=4000000&res=\(resValue)", domain: ".youtube.com")
+            webView.evaluateJavaScript(js)
         }
     }
 }
