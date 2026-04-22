@@ -60,7 +60,6 @@ struct ContentView: View {
             }
             .navigationDestination(isPresented: $showWebView) {
                 WebViewManagerView(urlString: urlText, resolution: selectedResolution)
-                    // El ID asegura que si cambias de URL, se cree una instancia nueva
                     .id(urlText + selectedResolution)
             }
         }
@@ -75,25 +74,16 @@ struct WebViewManagerView: View {
     @State private var webHeight: Int = 0
 
     var body: some View {
-        // GeometryReader es la clave: detecta cambios de tamaño (rotación) en tiempo real
-        GeometryReader { geometry in
-            WebViewContainer(
-                urlString: urlString,
-                resolution: resolution,
-                webWidth: $webWidth,
-                webHeight: $webHeight,
-                viewSize: geometry.size
-            )
-        }
-        .ignoresSafeArea(.container, edges: .bottom)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                Text("\(webWidth) x \(webHeight) PX")
-                    .font(.system(size: 14, weight: .bold, design: .monospaced))
-                    .foregroundColor(.blue)
+        WebViewContainer(urlString: urlString, resolution: resolution, webWidth: $webWidth, webHeight: $webHeight)
+            .ignoresSafeArea(.container, edges: .bottom)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text("\(webWidth) x \(webHeight) PX")
+                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .foregroundColor(.blue)
+                }
             }
-        }
-        .navigationBarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -103,7 +93,6 @@ struct WebViewContainer: UIViewRepresentable {
     let resolution: String
     @Binding var webWidth: Int
     @Binding var webHeight: Int
-    let viewSize: CGSize // Recibimos el tamaño de la pantalla
     
     var targetWidth: CGFloat {
         switch resolution {
@@ -128,13 +117,15 @@ struct WebViewContainer: UIViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.customUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
         webView.scrollView.contentInsetAdjustmentBehavior = .never
+        webView.alpha = 0 
         
         setupCookies(webView: webView)
+        
         return webView
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
-        // 1. Cargar URL si es la primera vez
+        // Cargar URL si es necesario
         if uiView.url == nil {
             var finalUrl = urlString.trimmingCharacters(in: .whitespaces)
             if !finalUrl.lowercased().hasPrefix("http") { finalUrl = "https://\(finalUrl)" }
@@ -143,8 +134,8 @@ struct WebViewContainer: UIViewRepresentable {
             }
         }
         
-        // 2. RE-AJUSTE DINÁMICO: Se ejecuta cada vez que viewSize cambia (rotación)
-        context.coordinator.applyLayout(uiView, currentSize: viewSize)
+        // RE-APLICAR FIX AL ROTAR: SwiftUI llama a updateUIView cuando cambian los bounds
+        context.coordinator.applyFinalFixes(uiView)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -152,30 +143,6 @@ struct WebViewContainer: UIViewRepresentable {
     class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var parent: WebViewContainer
         init(_ parent: WebViewContainer) { self.parent = parent }
-
-        // Función central para ajustar el zoom según el ancho de la pantalla actual
-        func applyLayout(_ webView: WKWebView, currentSize: CGSize) {
-            let zoom = currentSize.width / parent.targetWidth
-            
-            let js = """
-            (function() {
-                var meta = document.querySelector('meta[name="viewport"]') || document.createElement('meta');
-                meta.name = "viewport";
-                meta.setAttribute('content', 'width=\(Int(parent.targetWidth)), initial-scale=\(zoom), minimum-scale=\(zoom), maximum-scale=5.0, user-scalable=yes');
-                if(!document.head.contains(meta)) document.head.appendChild(meta);
-                
-                document.documentElement.style.width = '\(Int(parent.targetWidth))px';
-                document.body.style.width = '\(Int(parent.targetWidth))px';
-                
-                // Reportar dimensiones reales
-                window.webkit.messageHandlers.resObserver.postMessage({
-                    w: document.documentElement.clientWidth,
-                    h: document.documentElement.clientHeight
-                });
-            })();
-            """
-            webView.evaluateJavaScript(js)
-        }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             if let dict = message.body as? [String: Any] {
@@ -189,8 +156,43 @@ struct WebViewContainer: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            // Asegurar que al terminar de cargar se aplique el layout correcto
-            parent.updateUIView(webView, context: .init(coordinator: self, transaction: .init()))
+            applyFinalFixes(webView)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                UIView.animate(withDuration: 0.4) { webView.alpha = 1 }
+            }
+        }
+
+        func applyFinalFixes(_ webView: WKWebView) {
+            let targetW = parent.targetWidth
+            
+            // Este script calcula la escala relativa al ancho actual de la pantalla (ya sea Portrait o Landscape)
+            let js = """
+            (function() {
+                function adjustResolution() {
+                    var targetW = \(targetW);
+                    var currentWinW = window.innerWidth;
+                    var scale = currentWinW / targetW;
+
+                    var meta = document.querySelector('meta[name="viewport"]') || document.createElement('meta');
+                    meta.name = "viewport";
+                    meta.setAttribute('content', 'width=' + targetW + ', initial-scale=' + scale + ', minimum-scale=' + scale + ', maximum-scale=5.0, user-scalable=yes');
+                    if(!document.head.contains(meta)) document.head.appendChild(meta);
+                    
+                    document.documentElement.style.width = targetW + 'px';
+                    document.body.style.width = targetW + 'px';
+                    document.body.style.overflowX = 'hidden';
+
+                    window.webkit.messageHandlers.resObserver.postMessage({
+                        w: document.documentElement.clientWidth,
+                        h: document.documentElement.clientHeight
+                    });
+                }
+
+                adjustResolution();
+                window.onresize = adjustResolution;
+            })();
+            """
+            webView.evaluateJavaScript(js)
         }
     }
 
@@ -211,9 +213,11 @@ struct WebViewContainer: UIViewRepresentable {
         if url.contains("orbys.eu") {
             addCookie(name: "orbys-consent-cookie", value: "true", domain: ".orbys.eu")
         }
+        
         if url.contains("marca.com") {
             addCookie(name: "euconsent-v2", value: "CP-l_sAP-l_sAAHABBENBEsCsAP_AAH_AACiQH5NX_X_fb39j-_59_9t0eY1P9_j77uQzDhfNk-4F3L_W_L8X42M7vJ36pq4KuR4Eu3LBIQFk2JHNKJ7GE5dF2R7ZgWk3vBIQJb2c7E5rH0c", domain: ".marca.com")
         }
+        
         if url.contains("youtube.com") {
             addCookie(name: "SOCS", value: "CAISEwgDEgk4OTk4NzM2MzgaAmVzIAEaBgiA2ZXPBg", domain: ".youtube.com")
             let resValue = resolution == "4K" ? "2160" : (resolution == "2K" ? "1440" : "1080")
