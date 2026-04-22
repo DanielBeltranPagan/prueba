@@ -17,22 +17,17 @@ struct ContentView: View {
                 
                 VStack(alignment: .leading, spacing: 8) {
                     Text("URL de destino")
-                        .font(.caption)
-                        .foregroundColor(.gray)
-                    
-                    TextField("Introduce la URL (ej: youtube.com)", text: $urlText)
+                        .font(.caption).foregroundColor(.gray)
+                    TextField("Introduce la URL", text: $urlText)
                         .textFieldStyle(.roundedBorder)
-                        .textContentType(.URL)
-                        .keyboardType(.URL)
                         .autocorrectionDisabled(true)
                         .textInputAutocapitalization(.never)
                 }
                 .padding(.horizontal)
                 
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Selección de Resolución:")
+                    Text("Resolución Objetivo:")
                         .font(.subheadline).bold()
-                    
                     Picker("Resolución", selection: $selectedResolution) {
                         ForEach(resolutions, id: \.self) { res in
                             Text(res).tag(res)
@@ -58,40 +53,48 @@ struct ContentView: View {
                         .cornerRadius(12)
                 }
                 .disabled(urlText.isEmpty)
-                .padding(.horizontal)
-                .padding(.bottom, 30)
+                .padding(.horizontal).padding(.bottom, 30)
             }
             .navigationDestination(isPresented: $showWebView) {
-                GeometryReader { geo in
-                    let screenScale = UIScreen.main.scale
-                    // Estos son los píxeles reales que el dispositivo está usando para dibujar
-                    let pixelWidth = Int(geo.size.width * screenScale)
-                    let pixelHeight = Int(geo.size.height * screenScale)
-                    
-                    WebViewContainer(urlString: urlText, resolution: selectedResolution)
-                        .ignoresSafeArea(.container, edges: .bottom)
-                        .toolbar {
-                            ToolbarItem(placement: .principal) {
-                                Text("\(pixelWidth) x \(pixelHeight) PX")
-                                    .font(.system(size: 18, weight: .bold, design: .monospaced))
-                            }
-                        }
-                }
-                .navigationBarTitleDisplayMode(.inline)
+                WebViewManagerView(urlString: urlText, resolution: selectedResolution)
             }
         }
     }
 }
 
-// MARK: - WebView Container
-struct WebViewContainer: UIViewRepresentable {
+// MARK: - Gestor de Pantalla (Toolbar + State)
+struct WebViewManagerView: View {
     let urlString: String
     let resolution: String
     
+    @State private var webWidth: Int = 0
+    @State private var webHeight: Int = 0
+
+    var body: some View {
+        WebViewContainer(urlString: urlString, resolution: resolution, webWidth: $webWidth, webHeight: $webHeight)
+            .ignoresSafeArea(.container, edges: .bottom)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text("\(webWidth) x \(webHeight) PX")
+                        .font(.system(size: 18, weight: .bold, design: .monospaced))
+                        .foregroundColor(.blue)
+                }
+            }
+            .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+// MARK: - WebView Container Completo
+struct WebViewContainer: UIViewRepresentable {
+    let urlString: String
+    let resolution: String
+    @Binding var webWidth: Int
+    @Binding var webHeight: Int
+    
     private var targetWidth: CGFloat {
         switch resolution {
-        case "720p": return 1280  // Ancho estándar HD
-        case "1080p": return 1920 // Full HD
+        case "720p": return 1280
+        case "1080p": return 1920
         case "2K": return 2560
         case "4K": return 3840
         default: return 1920
@@ -99,18 +102,24 @@ struct WebViewContainer: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> WKWebView {
+        let contentController = WKUserContentController()
+        contentController.add(context.coordinator, name: "resObserver")
+        
         let config = WKWebViewConfiguration()
-        // Forzamos modo escritorio a nivel de configuración
+        config.userContentController = contentController
         config.defaultWebpagePreferences.preferredContentMode = .desktop
         
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         
-        // User Agent de Chrome Desktop para que la web no intente enviar la versión móvil
-        webView.customUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        // User Agent de Escritorio
+        webView.customUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
         
-        webView.alpha = 0 
-        webView.scrollView.contentInsetAdjustmentBehavior = .never // Evita saltos de la barra de estado
+        webView.alpha = 0
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
+        
+        // Ejecutar bypass de cookies
+        setupBypassAndResolutionCookies(url: urlString, webView: webView)
         
         return webView
     }
@@ -118,59 +127,89 @@ struct WebViewContainer: UIViewRepresentable {
     func updateUIView(_ uiView: WKWebView, context: Context) {
         var finalUrl = urlString.trimmingCharacters(in: .whitespaces)
         if !finalUrl.lowercased().hasPrefix("http") { finalUrl = "https://\(finalUrl)" }
-        guard let url = URL(string: finalUrl) else { return }
         
-        if uiView.url == nil { uiView.load(URLRequest(url: url)) }
+        if uiView.url == nil, let url = URL(string: finalUrl) {
+            uiView.load(URLRequest(url: url))
+        }
         
-        // Re-ajuste en cada actualización (rotación)
         DispatchQueue.main.async {
-            context.coordinator.applyRobustScale(to: uiView)
+            context.coordinator.applyScaleAndReport(uiView)
         }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    class Coordinator: NSObject, WKNavigationDelegate {
+    class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var parent: WebViewContainer
         init(_ parent: WebViewContainer) { self.parent = parent }
 
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            if let dict = message.body as? [String: Int] {
+                DispatchQueue.main.async {
+                    self.parent.webWidth = dict["w"] ?? 0
+                    self.parent.webHeight = dict["h"] ?? 0
+                }
+            }
+        }
+
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            applyRobustScale(to: webView)
-            
-            // Retraso para que el motor de renderizado procese el JS de escalado
+            applyScaleAndReport(webView)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                 UIView.animate(withDuration: 0.4) { webView.alpha = 1 }
             }
         }
-        
-        func applyRobustScale(to webView: WKWebView) {
+
+        func applyScaleAndReport(_ webView: WKWebView) {
             let screenWidth = webView.frame.width > 0 ? webView.frame.width : UIScreen.main.bounds.width
-            let scale = screenWidth / parent.targetWidth
+            let zoom = screenWidth / parent.targetWidth
             
-            // Este script hace tres cosas:
-            // 1. Fuerza el viewport al ancho objetivo (ej: 1920)
-            // 2. Escala el documento entero para que quepa en la pantalla del iPhone
-            // 3. Desactiva el ajuste automático de texto de iOS
             let js = """
             (function() {
-                var meta = document.querySelector('meta[name="viewport"]');
-                if(!meta) { 
-                    meta = document.createElement('meta'); 
-                    meta.name = "viewport"; 
-                    document.head.appendChild(meta); 
-                }
-                meta.setAttribute('content', 'width=\(Int(parent.targetWidth)), initial-scale=\(scale), minimum-scale=\(scale), maximum-scale=5.0');
+                var meta = document.querySelector('meta[name="viewport"]') || document.createElement('meta');
+                meta.name = "viewport";
+                meta.setAttribute('content', 'width=\(Int(parent.targetWidth)), initial-scale=\(zoom), minimum-scale=\(zoom), user-scalable=yes');
+                if(!document.head.contains(meta)) document.head.appendChild(meta);
                 
                 document.documentElement.style.width = '\(Int(parent.targetWidth))px';
                 document.body.style.width = '\(Int(parent.targetWidth))px';
-                document.documentElement.style.zoom = "\(scale)";
-                document.body.style.webkitTextSizeAdjust = 'none';
+                document.body.style.overflowX = 'hidden';
+                
+                function report() {
+                    window.webkit.messageHandlers.resObserver.postMessage({
+                        w: window.innerWidth,
+                        h: window.innerHeight
+                    });
+                }
+                report();
+                window.onresize = report;
             })();
             """
-            
             webView.evaluateJavaScript(js)
         }
     }
-}
 
+    // MARK: - Lógica de Cookies Re-incorporada
+    private func setupBypassAndResolutionCookies(url: String, webView: WKWebView) {
+        let cookieStore = webView.configuration.websiteDataStore.httpCookieStore
+        func setCookie(name: String, value: String, domain: String) {
+            let props: [HTTPCookiePropertyKey: Any] = [
+                .name: name, .value: value, .domain: domain, .path: "/",
+                .expires: Date(timeIntervalSinceNow: 31536000)
+            ]
+            if let cookie = HTTPCookie(properties: props) { cookieStore.setCookie(cookie) }
+        }
+        
+        if url.contains("orbys.eu") { 
+            setCookie(name: "orbys-consent-cookie", value: "true", domain: ".orbys.eu") 
+        }
+        if url.contains("marca.com") {
+            setCookie(name: "euconsent-v2", value: "CP-l_sAP-l_sAAHABBENBEsCsAP_AAH_AACiQH5NX_X_fb39j-_59_9t0eY1P9_j77uQzDhfNk-4F3L_W_L8X42M7vJ36pq4KuR4Eu3LBIQFk2JHNKJ7GE5dF2R7ZgWk3vBIQJb2c7E5rH0c", domain: ".marca.com")
+        }
+        if url.contains("youtube.com") {
+            setCookie(name: "SOCS", value: "CAISEwgDEgk4OTk4NzM2MzgaAmVzIAEaBgiA2ZXPBg", domain: ".youtube.com")
+            let resValue = resolution == "4K" ? "2160" : (resolution == "2K" ? "1440" : "1080")
+            setCookie(name: "PREF", value: "f4=4000000&res=\(resValue)", domain: ".youtube.com")
+        }
+    }
+}
 // setCookie(name: "orbys-region-cookie", value: "emea", domain: ".orbys.eu")
