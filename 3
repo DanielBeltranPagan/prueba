@@ -14,7 +14,6 @@ struct pruebaApp: App {
 
 // MARK: - View Principal
 struct ContentView: View {
-    // AppStorage guarda la URL localmente en la app
     @AppStorage("last_url_saved") private var urlText: String = ""
     @State private var selectedResolution = "720p"
     @State private var showWebView = false
@@ -24,7 +23,7 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 25) {
-                Text("Configurador iOS")
+                Text("Configurador iOS Pro")
                     .font(.system(size: 24, weight: .bold))
                     .padding(.top, 20)
                 
@@ -64,7 +63,7 @@ struct ContentView: View {
                         showWebView = true
                     }
                 }) {
-                    Text("ABRIR WEBVIEW")
+                    Text("ABRIR EN \(selectedResolution)")
                         .font(.headline)
                         .frame(maxWidth: .infinity)
                         .padding()
@@ -77,9 +76,8 @@ struct ContentView: View {
                 .padding(.bottom, 30)
             }
             .navigationDestination(isPresented: $showWebView) {
-                // PASAMOS URL Y RESOLUCIÓN AL CONTENEDOR
                 WebViewContainer(urlString: urlText, resolution: selectedResolution)
-                    .ignoresSafeArea(.all, edges: .bottom)
+                    .ignoresSafeArea(.all)
             }
         }
     }
@@ -92,8 +90,8 @@ struct WebViewContainer: UIViewRepresentable {
     
     static let sharedProcessPool = WKProcessPool()
     
-    // Mapeo de anchos objetivos (igual que en tu Android)
-    private var targetWidth: Int {
+    // Mapeo de anchos (Igual que en tu Android)
+    private var targetWidth: CGFloat {
         switch resolution {
         case "720p": return 720
         case "1080p": return 1280
@@ -107,33 +105,36 @@ struct WebViewContainer: UIViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.processPool = Self.sharedProcessPool
         
-        // 1. Configuración de User Agent de Escritorio (Crucial para que la web no se fuerce a "mobile")
+        // 1. User Agent de Escritorio para habilitar assets de alta calidad
         let desktopUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         
-        // 2. Inyección de Script para forzar el Viewport (Equivalente a tu applyResolution de Android)
+        // 2. Inyección de Script para forzar Viewport y desactivar auto-escalado de fuentes (Crucial para 4K)
         let scriptSource = """
         (function() {
             var targetW = \(targetWidth);
             var meta = document.querySelector('meta[name="viewport"]') || document.createElement('meta');
             meta.name = "viewport";
-            meta.setAttribute('content', 'width=' + targetW + ', initial-scale=1.0, maximum-scale=1.0, user-scalable=yes');
+            meta.setAttribute('content', 'width=' + targetW + ', initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=yes, shrink-to-fit=no');
             if (!meta.parentNode) document.head.appendChild(meta);
             
-            // Forzar el ancho en el body también
-            var style = document.createElement('style');
-            style.innerHTML = 'html, body { min-width: ' + targetW + 'px !important; width: ' + targetW + 'px !important; }';
-            document.head.appendChild(style);
+            var style = document.getElementById('resolution-style') || document.createElement('style');
+            style.id = 'resolution-style';
+            style.innerHTML = 'html, body { min-width: ' + targetW + 'px !important; width: ' + targetW + 'px !important; -webkit-text-size-adjust: none !important; }';
+            if (!style.parentNode) document.head.appendChild(style);
         })();
         """
+        
         let userScript = WKUserScript(source: scriptSource, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
         configuration.userContentController.addUserScript(userScript)
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.customUserAgent = desktopUA
-        webView.navigationDelegate = context.coordinator // Necesario para detectar carga
+        webView.navigationDelegate = context.coordinator
         
-        // En iOS, esto ayuda a que el contenido se ajuste al frame si el viewport falla
-        webView.scrollView.contentInsetAdjustmentBehavior = .never 
+        // Permitir zoom out extremo para que quepan los 3840px
+        webView.scrollView.minimumZoomScale = 0.05
+        webView.scrollView.maximumZoomScale = 5.0
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
         
         setupBypassAndResolutionCookies(url: urlString, webView: webView)
         
@@ -145,16 +146,14 @@ struct WebViewContainer: UIViewRepresentable {
         if !finalUrl.lowercased().hasPrefix("http") {
             finalUrl = "https://\(finalUrl)"
         }
-        
         guard let url = URL(string: finalUrl) else { return }
         
         if uiView.url?.absoluteString != url.absoluteString {
-            let request = URLRequest(url: url)
-            uiView.load(request)
+            uiView.load(URLRequest(url: url))
         }
     }
 
-    // MARK: - Coordinator para manejar el escalado final
+    // MARK: - Coordinator para el ajuste de escala
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
@@ -167,17 +166,19 @@ struct WebViewContainer: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            // Calculamos el factor de escala: Ancho Real Pantalla / Ancho Objetivo
-            let screenWidth = UIScreen.main.bounds.width
-            let zoomScale = screenWidth / CGFloat(parent.targetWidth)
-            
-            // Aplicamos el zoom al scrollview para que "quepa" la resolución grande en la pantalla pequeña
-            webView.scrollView.setZoomScale(zoomScale, animated: true)
-            webView.scrollView.minimumZoomScale = zoomScale
+            // Delay para asegurar que el motor de renderizado procesó el nuevo ancho
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                let screenWidth = UIScreen.main.bounds.width
+                let zoomScale = screenWidth / self.parent.targetWidth
+                
+                // Forzamos el zoom visual para que la web "encaje" en la pantalla
+                webView.scrollView.setZoomScale(zoomScale, animated: true)
+                webView.scrollView.minimumZoomScale = zoomScale
+            }
         }
     }
 
-    // --- Tu lógica de Cookies se mantiene igual ---
+    // MARK: - Lógica de Cookies
     private func setupBypassAndResolutionCookies(url: String, webView: WKWebView) {
         let cookieStore = webView.configuration.websiteDataStore.httpCookieStore
         
@@ -191,17 +192,22 @@ struct WebViewContainer: UIViewRepresentable {
             }
         }
 
-        if url.contains("orbys.eu") { setCookie(name: "orbys-consent-cookie", value: "true", domain: ".orbys.eu") }
-        if url.contains("marca.com") {
-             let d = ".marca.com"
-             setCookie(name: "euconsent-v2", value: "CP-l_sAP-l...", domain: d)
-             setCookie(name: "didomi_token", value: "eyJ1c2Vy...", domain: d)
+        if url.contains("orbys.eu") {
+            setCookie(name: "orbys-consent-cookie", value: "true", domain: ".orbys.eu")
         }
+
+        if url.contains("marca.com") {
+            let d = ".marca.com"
+            setCookie(name: "euconsent-v2", value: "CP-l_sAP-l_sAAHABBENBEsCsAP_AAH_AACiQH5NX_X_fb39j-_59_9t0eY1P9_j77uQzDhfNk-4F3L_W_L8X42M7vJ36pq4KuR4Eu3LBIQFk2JHNKJ7GE5dF2R7ZgWk3vBIQJb2c7E5rH0c", domain: d)
+            setCookie(name: "didomi_token", value: "eyJ1c2VyX2lkIjoiMTlkYWY5MjYtZmZkMy02OGZmLThhNTYtMWU1M2U4MjU2MjBjIiwiY3JlYXRlZCI6IjIwMjYtMDQtMjFUMTA6MjU6MDIuOTczWiIsInVwZGF0ZWQiOiIyMDI2LTA0LTIxVDEwOjI1OjAyLjk3M1oiLCJ2ZXJzaW9uIjpudWxsfQ==", domain: d)
+            setCookie(name: "FCCDCF", value: "%5Bnull%2Cnull%2Cnull%2Cnull%2Cnull%2Cnull%2C%5B%5B32%2C%22consent%22%5D%5D%5D", domain: d)
+            setCookie(name: "didomi_token_notice_shown", value: "true", domain: d)
+        }
+
         if url.contains("youtube.com") {
             setCookie(name: "SOCS", value: "CAISEwgDEgk4OTk4NzM2MzgaAmVzIAEaBgiA2ZXPBg", domain: ".youtube.com")
             let resValue = resolution == "4K" ? "2160" : (resolution == "2K" ? "1440" : "1080")
             setCookie(name: "PREF", value: "f4=4000000&res=\(resValue)", domain: ".youtube.com")
         }
     }
-}
 }
