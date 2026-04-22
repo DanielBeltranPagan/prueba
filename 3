@@ -12,78 +12,10 @@ struct pruebaApp: App {
     }
 }
 
-// MARK: - View Principal
-struct ContentView: View {
-    @AppStorage("last_url_saved") private var urlText: String = ""
-    @State private var selectedResolution = "720p"
-    @State private var showWebView = false
-    
-    let resolutions = ["720p", "1080p", "2K", "4K"]
-    
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 25) {
-                Text("Configurador iOS Pro")
-                    .font(.system(size: 24, weight: .bold))
-                    .padding(.top, 20)
-                
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("URL de destino")
-                        .font(.caption)
-                        .foregroundColor(.gray)
-                        .padding(.leading, 4)
-                    
-                    TextField("Introduce la URL (ej: marca.com)", text: $urlText)
-                        .textFieldStyle(.roundedBorder)
-                        .textContentType(.URL)
-                        .keyboardType(.URL)
-                        .autocorrectionDisabled(true)
-                        .textInputAutocapitalization(.never)
-                }
-                .padding(.horizontal)
-                
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Selección de Resolución:")
-                        .font(.subheadline)
-                        .bold()
-                    
-                    Picker("Resolución", selection: $selectedResolution) {
-                        ForEach(resolutions, id: \.self) { res in
-                            Text(res).tag(res)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                }
-                .padding(.horizontal)
-                
-                Spacer()
-                
-                Button(action: {
-                    if !urlText.trimmingCharacters(in: .whitespaces).isEmpty {
-                        showWebView = true
-                    }
-                }) {
-                    Text("ABRIR EN \(selectedResolution)")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(urlText.isEmpty ? Color.gray.opacity(0.3) : Color.blue)
-                        .foregroundColor(.white)
-                        .cornerRadius(12)
-                }
-                .disabled(urlText.isEmpty)
-                .padding(.horizontal)
-                .padding(.bottom, 30)
-            }
-            .navigationDestination(isPresented: $showWebView) {
-                WebViewContainer(urlString: urlText, resolution: selectedResolution)
-                    .ignoresSafeArea(.all)
-            }
-        }
-    }
-}
+import SwiftUI
+import WebKit
 
-// MARK: - WKWebView Wrapper
+// MARK: - INTERFAZ DE USUARIO
 struct ContentView: View {
     @AppStorage("last_url_saved") private var urlText: String = ""
     @State private var selectedResolution = "720p"
@@ -96,13 +28,12 @@ struct ContentView: View {
             VStack(spacing: 25) {
                 Text("WebView Resolution Pro")
                     .font(.system(size: 24, weight: .bold))
-                    .padding(.top, 20)
+                    .padding(.top, 40)
                 
                 VStack(alignment: .leading, spacing: 8) {
                     Text("URL de destino")
                         .font(.caption)
                         .foregroundColor(.gray)
-                        .padding(.leading, 4)
                     
                     TextField("Introduce la URL (ej: youtube.com)", text: $urlText)
                         .textFieldStyle(.roundedBorder)
@@ -153,12 +84,11 @@ struct ContentView: View {
     }
 }
 
-// MARK: - 3. Motor del WebView (UIViewRepresentable)
+// MARK: - MOTOR DEL WEBVIEW (Lógica de Resolución y Cookies)
 struct WebViewContainer: UIViewRepresentable {
     let urlString: String
     let resolution: String
     
-    // Compartir cookies entre sesiones
     static let sharedProcessPool = WKProcessPool()
     
     private var targetWidth: CGFloat {
@@ -175,7 +105,7 @@ struct WebViewContainer: UIViewRepresentable {
         let config = WKWebViewConfiguration()
         config.processPool = Self.sharedProcessPool
         
-        // SCRIPT PRE-CARGA: Configura el ancho antes de que la web se pinte
+        // Inyección de JS para forzar resolución antes de pintar
         let scriptSource = """
         (function() {
             var targetW = \(targetWidth);
@@ -194,16 +124,13 @@ struct WebViewContainer: UIViewRepresentable {
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
-        
-        // USER AGENT: Engañamos para que nos den versión de escritorio (necesario para 4K)
         webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         
-        // ESTÉTICA: Empezamos invisible para ocultar el proceso de escalado
+        // Oculto inicialmente para evitar el "salto" visual
         webView.alpha = 0
         webView.scrollView.minimumZoomScale = 0.01
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         
-        // Configurar Cookies (Bypass)
         setupBypassAndResolutionCookies(url: urlString, webView: webView)
         
         return webView
@@ -221,7 +148,6 @@ struct WebViewContainer: UIViewRepresentable {
         }
     }
 
-    // MARK: - 4. Coordinador (Lógica de Escalado y Transición)
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
@@ -234,16 +160,14 @@ struct WebViewContainer: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            // Pequeño delay para asegurar que el motor WebKit aplicó el ancho del viewport
+            // Aplicar escala y mostrar
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 let screenWidth = UIScreen.main.bounds.width
                 let zoomScale = screenWidth / self.parent.targetWidth
                 
-                // Ajustamos el zoom del scrollview para que la resolución quepa en pantalla
                 webView.scrollView.minimumZoomScale = zoomScale
                 webView.scrollView.setZoomScale(zoomScale, animated: false)
                 
-                // Una vez escalado, mostramos la web con suavidad
                 UIView.animate(withDuration: 0.4) {
                     webView.alpha = 1
                 }
@@ -251,7 +175,6 @@ struct WebViewContainer: UIViewRepresentable {
         }
     }
 
-    // MARK: - 5. Lógica de Cookies (Igual que en tu Android)
     private func setupBypassAndResolutionCookies(url: String, webView: WKWebView) {
         let cookieStore = webView.configuration.websiteDataStore.httpCookieStore
         
@@ -266,10 +189,7 @@ struct WebViewContainer: UIViewRepresentable {
         }
 
         // --- BYPASS COOKIES ---
-        if url.contains("orbys.eu") {
-            setCookie(name: "orbys-consent-cookie", value: "true", domain: ".orbys.eu")
-        }
-
+        if url.contains("orbys.eu") { setCookie(name: "orbys-consent-cookie", value: "true", domain: ".orbys.eu") }
         if url.contains("marca.com") {
             let d = ".marca.com"
             setCookie(name: "euconsent-v2", value: "CP-l_sAP-l_sAAHABBENBEsCsAP_AAH_AACiQH5NX_X_fb39j-_59_9t0eY1P9_j77uQzDhfNk-4F3L_W_L8X42M7vJ36pq4KuR4Eu3LBIQFk2JHNKJ7GE5dF2R7ZgWk3vBIQJb2c7E5rH0c", domain: d)
@@ -277,7 +197,6 @@ struct WebViewContainer: UIViewRepresentable {
             setCookie(name: "FCCDCF", value: "%5Bnull%2Cnull%2Cnull%2Cnull%2Cnull%2Cnull%2C%5B%5B32%2C%22consent%22%5D%5D%5D", domain: d)
             setCookie(name: "didomi_token_notice_shown", value: "true", domain: d)
         }
-
         if url.contains("youtube.com") {
             setCookie(name: "SOCS", value: "CAISEwgDEgk4OTk4NzM2MzgaAmVzIAEaBgiA2ZXPBg", domain: ".youtube.com")
             let resValue = resolution == "4K" ? "2160" : (resolution == "2K" ? "1440" : "1080")
