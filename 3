@@ -62,14 +62,17 @@ struct ContentView: View {
                 .padding(.bottom, 30)
             }
             .navigationDestination(isPresented: $showWebView) {
+                // CAMBIO AQUÍ: Quitamos ignoresSafeArea y añadimos un título 
+                // para que la barra de navegación empuje el contenido hacia abajo.
                 WebViewContainer(urlString: urlText, resolution: selectedResolution)
-                    .ignoresSafeArea()
+                    .navigationTitle(selectedResolution)
+                    .navigationBarTitleDisplayMode(.inline)
             }
         }
     }
 }
 
-// MARK: - MOTOR DEL WEBVIEW (CORREGIDO)
+// MARK: - EL RESTO DEL CÓDIGO (WebViewContainer, Coordinator, etc.) SE MANTIENE IGUAL
 struct WebViewContainer: UIViewRepresentable {
     let urlString: String
     let resolution: String
@@ -90,12 +93,11 @@ struct WebViewContainer: UIViewRepresentable {
         
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
-        
-        // User Agent de escritorio para forzar assets de alta calidad
         webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
         
         webView.alpha = 0 
-        webView.scrollView.contentInsetAdjustmentBehavior = .never
+        // Importante: Aquí permitimos que iOS maneje los insets automáticamente
+        webView.scrollView.contentInsetAdjustmentBehavior = .always
         
         setupBypassAndResolutionCookies(url: urlString, webView: webView)
         
@@ -119,7 +121,6 @@ struct WebViewContainer: UIViewRepresentable {
             let screenWidth = UIScreen.main.bounds.width
             let zoomFactor = screenWidth / parent.targetWidth
             
-            // CORRECCIÓN: evaluateJavaScript (con S mayúscula)
             let js = """
             (function() {
                 var meta = document.querySelector('meta[name="viewport"]');
@@ -129,7 +130,6 @@ struct WebViewContainer: UIViewRepresentable {
                     document.head.appendChild(meta); 
                 }
                 meta.setAttribute('content', 'width=\(parent.targetWidth), initial-scale=\(zoomFactor), minimum-scale=\(zoomFactor), maximum-scale=\(zoomFactor)');
-                
                 document.body.style.width = '\(parent.targetWidth)px';
                 document.documentElement.style.width = '\(parent.targetWidth)px';
                 document.body.style.webkitTextSizeAdjust = 'none';
@@ -137,7 +137,6 @@ struct WebViewContainer: UIViewRepresentable {
             """
             
             webView.evaluateJavaScript(js) { _, _ in
-                // CORRECCIÓN: En iOS usamos el scrollView para el zoom
                 webView.scrollView.minimumZoomScale = zoomFactor
                 webView.scrollView.maximumZoomScale = zoomFactor
                 webView.scrollView.setZoomScale(zoomFactor, animated: false)
