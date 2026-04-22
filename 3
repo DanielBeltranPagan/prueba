@@ -159,7 +159,11 @@ struct WebViewContainer: UIViewRepresentable {
             ]
             if let cookie = HTTPCookie(properties: props) { cookieStore.setCookie(cookie) }
         }
-
+        
+        if url.contains("orbys.eu") {
+            setCookie(name: "orbys-consent-cookie", value: "true", domain: ".orbys.eu")
+        }
+        
         if url.contains("marca.com") {
             let d = ".marca.com"
             setCookie(name: "euconsent-v2", value: "CP-l_sAP-l_sAAHABBENBEsCsAP_AAH_AACiQH5NX_X_fb39j-_59_9t0eY1P9_j77uQzDhfNk-4F3L_W_L8X42M7vJ36pq4KuR4Eu3LBIQFk2JHNKJ7GE5dF2R7ZgWk3vBIQJb2c7E5rH0c", domain: d)
@@ -171,3 +175,6 @@ struct WebViewContainer: UIViewRepresentable {
         }
     }
 }
+
+
+// setCookie(name: "orbys-region-cookie", value: "emea", domain: ".orbys.eu")
