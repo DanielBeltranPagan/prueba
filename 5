@@ -174,8 +174,8 @@ struct WebViewContainer: UIViewRepresentable {
                 function update() {
                     var targetW = \(tW);
 
-                    // Ancho real del dispositivo (iOS-safe)
-                    var deviceW = Math.max(document.documentElement.clientWidth, window.innerWidth);
+                    // Ancho real del dispositivo (vertical u horizontal)
+                    var deviceW = window.innerWidth;
 
                     // Escala necesaria para simular la resolución
                     var scale = deviceW / targetW;
@@ -198,7 +198,7 @@ struct WebViewContainer: UIViewRepresentable {
 
                     // Medir tamaño del contenido real
                     window.webkit.messageHandlers.resObserver.postMessage({
-                        w: targetW,
+                        w: Math.round(targetW),
                         h: Math.round(document.documentElement.scrollHeight / scale)
                     });
                 }
@@ -243,3 +243,4 @@ struct WebViewContainer: UIViewRepresentable {
         }
     }
 }
+
