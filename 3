@@ -60,7 +60,6 @@ struct ContentView: View {
             }
             .navigationDestination(isPresented: $showWebView) {
                 WebViewManagerView(urlString: urlText, resolution: selectedResolution)
-                    // El ID asegura que al volver atrás y entrar con otra config, todo se resetee
                     .id(urlText + selectedResolution)
             }
         }
@@ -76,14 +75,12 @@ struct WebViewManagerView: View {
 
     var body: some View {
         WebViewContainer(urlString: urlString, resolution: resolution, webWidth: $webWidth, webHeight: $webHeight)
-            .ignoresSafeArea(.container, edges: .bottom)
+            .ignoresSafeArea() // Cambiado para aprovechar todo el ancho en horizontal
             .toolbar {
                 ToolbarItem(placement: .principal) {
-                    VStack {
-                        Text("\(webWidth) x \(webHeight) PX")
-                            .font(.system(size: 16, weight: .bold, design: .monospaced))
-                            .foregroundColor(.blue)
-                    }
+                    Text("\(webWidth) x \(webHeight) PX")
+                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .foregroundColor(.blue)
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
@@ -108,35 +105,26 @@ struct WebViewContainer: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
         let contentController = WKUserContentController()
         contentController.add(context.coordinator, name: "resObserver")
-        
-        // 1. Script inicial: Forzamos el viewport antes de que cargue el DOM
-        let scriptSource = """
-        var meta = document.createElement('meta');
-        meta.name = "viewport";
-        meta.content = "width=\(Int(targetWidth)), initial-scale=0.1";
-        document.getElementsByTagName('head')[0].appendChild(meta);
-        """
-        let userScript = WKUserScript(source: scriptSource, injectionTime: .atDocumentStart, forMainFrameOnly: true)
-        contentController.addUserScript(userScript)
-        
-        let config = WKWebViewConfiguration()
         config.userContentController = contentController
         config.defaultWebpagePreferences.preferredContentMode = .desktop
         config.allowsInlineMediaPlayback = true
         
-        let webView = WKWebView(frame: .zero, configuration: config)
+        // Usamos una subclase para detectar cambios de frame (rotación)
+        let webView = ResizableWKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
-        
-        // User Agent potente para evitar redirecciones móviles
         webView.customUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-        
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.alpha = 0 
         
-        setupCookies(webView: webView)
+        // Callback cuando el frame cambia (rotación)
+        webView.onResize = {
+            context.coordinator.applyFinalFixes(webView)
+        }
         
+        setupCookies(webView: webView)
         return webView
     }
 
@@ -157,10 +145,9 @@ struct WebViewContainer: UIViewRepresentable {
         init(_ parent: WebViewContainer) { self.parent = parent }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-            // JS envía números, los tratamos como Double por seguridad y luego Int
-            if let dict = message.body as? [String: Any] {
-                let w = dict["w"] as? Double ?? 0
-                let h = dict["h"] as? Double ?? 0
+            if let dict = message.body as? [String: Any],
+               let w = dict["w"] as? Double,
+               let h = dict["h"] as? Double {
                 DispatchQueue.main.async {
                     self.parent.webWidth = Int(w)
                     self.parent.webHeight = Int(h)
@@ -170,43 +157,32 @@ struct WebViewContainer: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             applyFinalFixes(webView)
-            // Pequeño delay para que el motor de renderizado termine de escalar
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                UIView.animate(withDuration: 0.4) { webView.alpha = 1 }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                UIView.animate(withDuration: 0.3) { webView.alpha = 1 }
             }
         }
 
         func applyFinalFixes(_ webView: WKWebView) {
-            let screenWidth = webView.bounds.width > 0 ? webView.bounds.width : UIScreen.main.bounds.width
-            let zoom = screenWidth / parent.targetWidth
+            // Importante: Usar el ancho actual del frame del webview, no el de la pantalla fija
+            let currentWidth = webView.bounds.width
+            guard currentWidth > 0 else { return }
+            
+            let zoom = currentWidth / parent.targetWidth
             
             let js = """
             (function() {
-                // Ajuste de Viewport dinámico basado en el ancho real del dispositivo
                 var meta = document.querySelector('meta[name="viewport"]') || document.createElement('meta');
                 meta.name = "viewport";
                 meta.setAttribute('content', 'width=\(Int(parent.targetWidth)), initial-scale=\(zoom), minimum-scale=\(zoom), maximum-scale=5.0, user-scalable=yes');
                 if(!document.head.contains(meta)) document.head.appendChild(meta);
                 
-                // Estilos para forzar el layout
                 document.documentElement.style.width = '\(Int(parent.targetWidth))px';
                 document.body.style.width = '\(Int(parent.targetWidth))px';
-                document.body.style.overflowX = 'hidden';
 
-                // Reporte preciso: clientWidth nos da el ancho del área de renderizado
-                window.reportRes = function() {
-                    window.webkit.messageHandlers.resObserver.postMessage({
-                        w: document.documentElement.clientWidth,
-                        h: document.documentElement.clientHeight
-                    });
-                };
-
-                window.onresize = window.reportRes;
-                window.addEventListener('orientationchange', function() {
-                    setTimeout(window.reportRes, 300);
+                window.webkit.messageHandlers.resObserver.postMessage({
+                    w: document.documentElement.clientWidth,
+                    h: document.documentElement.clientHeight
                 });
-                
-                window.reportRes();
             })();
             """
             webView.evaluateJavaScript(js)
@@ -227,19 +203,25 @@ struct WebViewContainer: UIViewRepresentable {
             }
         }
 
-        // --- BYPASS COOKIES ---
-        if url.contains("orbys.eu") {
-            addCookie(name: "orbys-consent-cookie", value: "true", domain: ".orbys.eu")
-        }
-        
-        if url.contains("marca.com") {
-            addCookie(name: "euconsent-v2", value: "CP-l_sAP-l_sAAHABBENBEsCsAP_AAH_AACiQH5NX_X_fb39j-_59_9t0eY1P9_j77uQzDhfNk-4F3L_W_L8X42M7vJ36pq4KuR4Eu3LBIQFk2JHNKJ7GE5dF2R7ZgWk3vBIQJb2c7E5rH0c", domain: ".marca.com")
-        }
-        
+        if url.contains("orbys.eu") { addCookie(name: "orbys-consent-cookie", value: "true", domain: ".orbys.eu") }
+        if url.contains("marca.com") { addCookie(name: "euconsent-v2", value: "CP-l_sAP", domain: ".marca.com") }
         if url.contains("youtube.com") {
             addCookie(name: "SOCS", value: "CAISEwgDEgk4OTk4NzM2MzgaAmVzIAEaBgiA2ZXPBg", domain: ".youtube.com")
             let resValue = resolution == "4K" ? "2160" : (resolution == "2K" ? "1440" : "1080")
             addCookie(name: "PREF", value: "f4=4000000&res=\(resValue)", domain: ".youtube.com")
+        }
+    }
+}
+
+// MARK: - Helper View for Resize
+class ResizableWKWebView: WKWebView {
+    var onResize: (() -> Void)?
+    
+    override var frame: CGRect {
+        didSet {
+            if oldValue.width != frame.width {
+                onResize?()
+            }
         }
     }
 }
