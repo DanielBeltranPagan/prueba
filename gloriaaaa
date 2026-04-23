@@ -1,0 +1,176 @@
+import SwiftUI
+import WebKit
+
+// MARK: - Main View
+struct ContentView: View {
+    @AppStorage("last_url_saved") private var urlText: String = ""
+    @State private var selectedResolution = "1080p"
+    @State private var showWebView = false
+
+    let resolutions = ["720p", "1080p", "2K", "4K"]
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 25) {
+                Text("WebView Resolution Pro")
+                    .font(.system(size: 24, weight: .bold))
+                    .padding(.top, 40)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("URL de destino").font(.caption).foregroundColor(.gray)
+                    TextField("Introduce la URL (ej: youtube.com)", text: $urlText)
+                        .textFieldStyle(.roundedBorder)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                }
+                .padding(.horizontal)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Resolución Objetivo:").font(.subheadline).bold()
+                    Picker("Resolución", selection: $selectedResolution) {
+                        ForEach(resolutions, id: \.self) { Text($0).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                }
+                .padding(.horizontal)
+
+                Spacer()
+
+                Button(action: { showWebView = true }) {
+                    Text("LANZAR EN \(selectedResolution)")
+                        .font(.headline).frame(maxWidth: .infinity).padding()
+                        .background(urlText.isEmpty ? Color.gray.opacity(0.3) : Color.blue)
+                        .foregroundColor(.white).cornerRadius(12)
+                }
+                .disabled(urlText.isEmpty)
+                .padding(.horizontal).padding(.bottom, 30)
+            }
+            .navigationDestination(isPresented: $showWebView) {
+                WebViewManagerView(urlString: urlText, resolution: selectedResolution)
+            }
+        }
+    }
+}
+
+// MARK: - Manager View
+struct WebViewManagerView: View {
+    let urlString: String
+    let resolution: String
+    @State private var webSize: (w: Int, h: Int) = (0, 0)
+    @State private var isReady: Bool = false 
+    @State private var errorMessage: String? = nil
+
+    var body: some View {
+        ZStack {
+            WebViewContainer(urlString: urlString, resolution: resolution, webSize: $webSize, isReady: $isReady, errorMessage: $errorMessage)
+                .ignoresSafeArea(.container, edges: .bottom)
+                .opacity(isReady ? 1 : 0)
+                .animation(.easeInOut(duration: 0.5), value: isReady)
+
+            if !isReady && errorMessage == nil {
+                Color(UIColor.systemBackground).ignoresSafeArea()
+                VStack(spacing: 20) {
+                    ProgressView().scaleEffect(1.3)
+                    Text("Sincronizando resolución...").font(.footnote).foregroundColor(.gray)
+                }
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Text(isReady ? "\(webSize.w) × \(webSize.h) px" : "Reconfigurando...")
+                    .font(.system(size: 14, weight: .bold, design: .monospaced)).foregroundColor(.blue)
+            }
+        }
+    }
+}
+
+// MARK: - WebView Container
+struct WebViewContainer: UIViewRepresentable {
+    let urlString: String
+    let resolution: String
+    @Binding var webSize: (w: Int, h: Int)
+    @Binding var isReady: Bool
+    @Binding var errorMessage: String?
+
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.userContentController.add(context.coordinator, name: "resObserver")
+        config.defaultWebpagePreferences.preferredContentMode = .desktop
+        
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = context.coordinator
+        webView.customUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
+        
+        loadURL(webView)
+        return webView
+    }
+
+    func loadURL(_ webView: WKWebView) {
+        let formatted = urlString.lowercased().hasPrefix("http") ? urlString : "https://\(urlString)"
+        if let url = URL(string: formatted.trimmingCharacters(in: .whitespaces)) {
+            webView.load(URLRequest(url: url))
+        }
+    }
+
+    func updateUIView(_ uiView: WKWebView, context: Context) {}
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+        var parent: WebViewContainer
+        weak var webView: WKWebView?
+
+        init(_ parent: WebViewContainer) {
+            self.parent = parent
+            super.init()
+            NotificationCenter.default.addObserver(self, selector: #selector(onRotation), name: UIDevice.orientationDidChangeNotification, object: nil)
+        }
+
+        @objc func onRotation() {
+            guard let webView = webView else { return }
+            // 1. Ocultamos la vista inmediatamente con la pantalla de carga
+            parent.isReady = false
+            
+            // 2. FORZAMOS EL RELOAD (Esto hace que cargue de "0" tras rotar)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                webView.reload()
+            }
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            self.webView = webView
+            // Al terminar la carga (ya sea la primera o tras rotar), aplicamos el JS
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                self.applyResolution(webView)
+            }
+        }
+
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            if let dict = message.body as? [String: Int] {
+                parent.webSize = (dict["w"] ?? 0, dict["h"] ?? 0)
+                // Pausa para que el renderizado de la recarga sea invisible al usuario
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    withAnimation { self.parent.isReady = true }
+                }
+            }
+        }
+
+        private func applyResolution(_ webView: WKWebView) {
+            let resMap: [String: (CGFloat, CGFloat)] = ["720p":(1280,720), "1080p":(1920,1080), "2K":(2560,1440), "4K":(3840,2160)]
+            let spec = resMap[parent.resolution] ?? (1920, 1080)
+            let isLandscape = webView.bounds.width > webView.bounds.height
+            let targetW = isLandscape ? spec.0 : spec.1
+            let scale = webView.bounds.width / targetW
+
+            let js = """
+                var meta = document.querySelector('meta[name="viewport"]') || document.createElement('meta');
+                meta.name = 'viewport';
+                meta.content = 'width=\(targetW), initial-scale=\(scale), minimum-scale=\(scale), user-scalable=no';
+                document.head.appendChild(meta);
+                setTimeout(function() {
+                    window.webkit.messageHandlers.resObserver.postMessage({w: \(Int(targetW)), h: \(Int(spec.1))});
+                }, 200);
+            """
+            webView.evaluateJavaScript(js)
+        }
+    }
+}
