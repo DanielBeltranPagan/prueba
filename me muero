@@ -19,17 +19,15 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("URL de destino")
                         .font(.caption).foregroundColor(.gray)
-                    TextField("Introduce la URL (ej: youtube.com)", text: $urlText)
+                    TextField("Introduce la URL", text: $urlText)
                         .textFieldStyle(.roundedBorder)
-                        .textContentType(.URL)
-                        .keyboardType(.URL)
                         .autocorrectionDisabled(true)
                         .textInputAutocapitalization(.never)
                 }
                 .padding(.horizontal)
 
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Resolución Objetivo (Ancho):")
+                    Text("Resolución Objetivo:")
                         .font(.subheadline).bold()
                     Picker("Resolución", selection: $selectedResolution) {
                         ForEach(resolutions, id: \.self) { res in
@@ -43,9 +41,7 @@ struct ContentView: View {
                 Spacer()
 
                 Button(action: {
-                    if !urlText.trimmingCharacters(in: .whitespaces).isEmpty {
-                        showWebView = true
-                    }
+                    if !urlText.isEmpty { showWebView = true }
                 }) {
                     Text("LANZAR EN \(selectedResolution)")
                         .font(.headline)
@@ -55,7 +51,6 @@ struct ContentView: View {
                         .foregroundColor(.white)
                         .cornerRadius(12)
                 }
-                .disabled(urlText.isEmpty)
                 .padding(.horizontal).padding(.bottom, 30)
             }
             .navigationDestination(isPresented: $showWebView) {
@@ -73,33 +68,31 @@ struct WebViewManagerView: View {
     @State private var webWidth: Int = 0
     @State private var webHeight: Int = 0
     @State private var errorMessage: String? = nil
+    
+    // El secreto: Una ID que cambia con la rotación para forzar el refresco del script
+    @State private var rotationTrigger = UUID()
 
     var body: some View {
-        ZStack {
-            WebViewContainer(
-                urlString: urlString,
-                resolution: resolution,
-                webWidth: $webWidth,
-                webHeight: $webHeight,
-                errorMessage: $errorMessage
-            )
-            .ignoresSafeArea(.container, edges: .bottom)
+        WebViewContainer(
+            urlString: urlString,
+            resolution: resolution,
+            webWidth: $webWidth,
+            webHeight: $webHeight,
+            errorMessage: $errorMessage,
+            rotationTrigger: rotationTrigger // Pasamos el trigger
+        )
+        .ignoresSafeArea(.container, edges: .bottom)
+        .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
+            // Cuando el iPhone gira, esperamos un momento y disparamos la actualización
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                self.rotationTrigger = UUID()
+            }
         }
         .toolbar {
             ToolbarItem(placement: .principal) {
-                HStack(spacing: 6) {
-                    Image(systemName: errorMessage != nil ? "exclamationmark.triangle" : "viewfinder")
-                    if errorMessage != nil {
-                        Text("Error").font(.system(size: 14, weight: .bold))
-                    } else {
-                        Text("\(webWidth) × \(webHeight) px")
-                            .font(.system(size: 14, weight: .bold, design: .monospaced))
-                    }
-                }
-                .foregroundColor(errorMessage != nil ? .orange : .blue)
+                Text("\(webWidth) × \(webHeight) px").font(.caption.monospaced()).bold().foregroundColor(.blue)
             }
         }
-        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -110,8 +103,8 @@ struct WebViewContainer: UIViewRepresentable {
     @Binding var webWidth: Int
     @Binding var webHeight: Int
     @Binding var errorMessage: String?
+    let rotationTrigger: UUID // Detecta cambios desde fuera
 
-    // Valores base según la selección
     var baseLong: CGFloat {
         switch resolution {
         case "720p": return 1280
@@ -134,9 +127,7 @@ struct WebViewContainer: UIViewRepresentable {
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
-        let contentController = WKUserContentController()
-        contentController.addScriptMessageHandler(context.coordinator, contentWorld: .page, name: "resObserver")
-        config.userContentController = contentController
+        config.userContentController.add(context.coordinator, name: "resObserver")
         config.defaultWebpagePreferences.preferredContentMode = .desktop
         config.allowsInlineMediaPlayback = true
 
@@ -144,46 +135,40 @@ struct WebViewContainer: UIViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.customUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
         webView.scrollView.contentInsetAdjustmentBehavior = .never
-        webView.alpha = 0
-
+        
         setupCookies(webView: webView)
-
-        var finalUrl = urlString.trimmingCharacters(in: .whitespaces)
-        if !finalUrl.lowercased().hasPrefix("http") { finalUrl = "https://\(finalUrl)" }
-        if let url = URL(string: finalUrl) { webView.load(URLRequest(url: url)) }
-
+        
+        if let url = URL(string: urlString.contains("http") ? urlString : "https://\(urlString)") {
+            webView.load(URLRequest(url: url))
+        }
         return webView
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
-        // Al rotar, SwiftUI llama a updateUIView. Esperamos a que el frame sea correcto.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            context.coordinator.applyViewportScript(uiView)
-        }
+        // Cada vez que rotationTrigger cambia (al rotar), se ejecuta esto
+        context.coordinator.applyViewport(uiView)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWithReply {
+    class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var parent: WebViewContainer
         init(_ parent: WebViewContainer) { self.parent = parent }
 
-        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage, replyHandler: @escaping (Any?, String?) -> Void) {
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             if let dict = message.body as? [String: Any] {
                 DispatchQueue.main.async {
                     self.parent.webWidth = dict["w"] as? Int ?? 0
                     self.parent.webHeight = dict["h"] as? Int ?? 0
                 }
             }
-            replyHandler(nil, nil)
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            applyViewportScript(webView)
-            UIView.animate(withDuration: 0.4) { webView.alpha = 1 }
+            applyViewport(webView)
         }
 
-        func applyViewportScript(_ webView: WKWebView) {
+        func applyViewport(_ webView: WKWebView) {
             let width = webView.bounds.width
             let height = webView.bounds.height
             guard width > 0 else { return }
@@ -192,41 +177,31 @@ struct WebViewContainer: UIViewRepresentable {
             let targetW = isLandscape ? parent.baseLong : parent.baseShort
             let targetH = isLandscape ? parent.baseShort : parent.baseLong
             
-            // Calculamos el scale para que el contenido encaje al 100% del ancho del dispositivo
+            // Calculamos la escala exacta según el ancho actual del iPhone
             let scale = width / targetW
 
             let js = """
-            (function() {
-                var meta = document.querySelector('meta[name="viewport"]');
-                if (!meta) {
-                    meta = document.createElement('meta');
-                    meta.name = 'viewport';
-                    document.head.appendChild(meta);
-                }
-                meta.setAttribute('content', 'width=\(Int(targetW)), initial-scale=\(scale), minimum-scale=\(scale), maximum-scale=\(scale), user-scalable=no');
-                window.dispatchEvent(new Event('resize'));
-                window.webkit.messageHandlers.resObserver.postMessage({w: \(Int(targetW)), h: \(Int(targetH))});
-            })();
+            var meta = document.querySelector('meta[name="viewport"]');
+            if (!meta) {
+                meta = document.createElement('meta');
+                meta.name = 'viewport';
+                document.head.appendChild(meta);
+            }
+            meta.setAttribute('content', 'width=\(Int(targetW)), initial-scale=\(scale), minimum-scale=\(scale), maximum-scale=\(scale), user-scalable=no');
+            window.webkit.messageHandlers.resObserver.postMessage({w: \(Int(targetW)), h: \(Int(targetH))});
             """
-            webView.evaluateJavaScript(js, completionHandler: nil)
+            webView.evaluateJavaScript(js)
         }
     }
 
     private func setupCookies(webView: WKWebView) {
-        var finalUrl = urlString.trimmingCharacters(in: .whitespaces)
-        if !finalUrl.lowercased().hasPrefix("http") { finalUrl = "https://\(finalUrl)" }
-        guard let parsedURL = URL(string: finalUrl), let host = parsedURL.host else { return }
-        let cookieStore = webView.configuration.websiteDataStore.httpCookieStore
+        guard let host = URL(string: urlString.contains("http") ? urlString : "https://\(urlString)")?.host else { return }
+        let store = webView.configuration.websiteDataStore.httpCookieStore
         
-        func addCookie(name: String, value: String, domain: String) {
-            let props: [HTTPCookiePropertyKey: Any] = [.name: name, .value: value, .domain: domain, .path: "/", .expires: Date(timeIntervalSinceNow: 31536000)]
-            if let cookie = HTTPCookie(properties: props) { cookieStore.setCookie(cookie) }
-        }
-
         if host.contains("youtube.com") {
-            let resValue: String
-            switch resolution { case "4K": resValue = "2160"; case "2K": resValue = "1440"; case "720p": resValue = "720"; default: resValue = "1080" }
-            addCookie(name: "PREF", value: "f4=4000000&res=\(resValue)", domain: ".youtube.com")
+            let resValue = resolution == "4K" ? "2160" : (resolution == "2K" ? "1440" : (resolution == "720p" ? "720" : "1080"))
+            let cookie = HTTPCookie(properties: [.name: "PREF", .value: "f4=4000000&res=\(resValue)", .domain: ".youtube.com", .path: "/", .expires: Date(timeIntervalSinceNow: 31536000)])!
+            store.setCookie(cookie)
         }
     }
 }
