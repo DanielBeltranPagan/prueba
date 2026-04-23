@@ -1,0 +1,224 @@
+import SwiftUI
+import WebKit
+
+// MARK: - Main View
+struct ContentView: View {
+
+    @State private var urlText: String = ""
+    @State private var selectedResolution = "1080p"
+    @State private var showWebView = false
+
+    let resolutions = ["720p", "1080p", "2K", "4K"]
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 25) {
+
+                Text("WebView Resolution Pro")
+                    .font(.system(size: 24, weight: .bold))
+                    .padding(.top, 40)
+
+                TextField("Introduce URL", text: $urlText)
+                    .textFieldStyle(.roundedBorder)
+                    .padding(.horizontal)
+
+                Picker("Resolución", selection: $selectedResolution) {
+                    ForEach(resolutions, id: \.self) { Text($0) }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+
+                Spacer()
+
+                Button("LANZAR") {
+                    showWebView = true
+                }
+                .padding()
+            }
+            .navigationDestination(isPresented: $showWebView) {
+                WebViewManagerView(urlString: urlText, resolution: selectedResolution)
+            }
+        }
+    }
+}
+
+// MARK: - Manager
+struct WebViewManagerView: View {
+
+    let urlString: String
+    let resolution: String
+
+    @State private var w = 0
+    @State private var h = 0
+
+    var body: some View {
+        WebViewContainer(urlString: urlString,
+                         resolution: resolution,
+                         webWidth: $w,
+                         webHeight: $h)
+            .toolbar {
+                Text("\(w) × \(h)")
+            }
+    }
+}
+
+// MARK: - WebView
+struct WebViewContainer: UIViewRepresentable {
+
+    let urlString: String
+    let resolution: String
+
+    @Binding var webWidth: Int
+    @Binding var webHeight: Int
+
+    var targetWidth: CGFloat {
+        switch resolution {
+        case "720p": return 1280
+        case "1080p": return 1920
+        case "2K": return 2560
+        case "4K": return 3840
+        default: return 1920
+        }
+    }
+
+    var targetHeight: CGFloat {
+        switch resolution {
+        case "720p": return 720
+        case "1080p": return 1080
+        case "2K": return 1440
+        case "4K": return 2160
+        default: return 1080
+        }
+    }
+
+    func makeUIView(context: Context) -> WKWebView {
+
+        let controller = WKUserContentController()
+        controller.addScriptMessageHandler(
+            context.coordinator,
+            contentWorld: .page,
+            name: "resObserver"
+        )
+
+        let config = WKWebViewConfiguration()
+        config.userContentController = controller
+        config.defaultWebpagePreferences.preferredContentMode = .desktop
+
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = context.coordinator
+        webView.alpha = 0
+
+        context.coordinator.webView = webView
+
+        var final = urlString
+        if !final.hasPrefix("http") {
+            final = "https://\(final)"
+        }
+
+        webView.load(URLRequest(url: URL(string: final)!))
+
+        return webView
+    }
+
+    func updateUIView(_ uiView: WKWebView, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    // MARK: - Coordinator
+    class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWithReply {
+
+        var parent: WebViewContainer
+        weak var webView: WKWebView?
+        var lastOrientation: Bool?
+
+        init(_ parent: WebViewContainer) {
+            self.parent = parent
+            super.init()
+
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(rotated),
+                name: UIDevice.orientationDidChangeNotification,
+                object: nil
+            )
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                self.applyViewport()
+                UIView.animate(withDuration: 0.3) {
+                    webView.alpha = 1
+                }
+            }
+        }
+
+        @objc func rotated() {
+            guard let webView = webView else { return }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                self.lastOrientation = nil
+                self.applyViewport()
+            }
+        }
+
+        func applyViewport() {
+            guard let webView = webView else { return }
+
+            let size = webView.frame.size
+            guard size.width > 0 else { return }
+
+            let isLandscape = size.width > size.height
+
+            if lastOrientation == isLandscape { return }
+            lastOrientation = isLandscape
+
+            let adaptedW = isLandscape ? parent.targetWidth : parent.targetHeight
+            let adaptedH = isLandscape ? parent.targetHeight : parent.targetWidth
+
+            let scale = size.width / adaptedW
+
+            let js = """
+            (function() {
+
+                document.querySelectorAll('meta[name="viewport"]').forEach(e => e.remove());
+
+                var meta = document.createElement('meta');
+                meta.name = 'viewport';
+                meta.setAttribute('content',
+                    'width=' + \(Int(adaptedW)) +
+                    ',initial-scale=' + \(scale) +
+                    ',minimum-scale=' + \(scale) +
+                    ',maximum-scale=' + \(scale) +
+                    ',user-scalable=no'
+                );
+
+                document.head.appendChild(meta);
+
+                window.webkit.messageHandlers.resObserver.postMessage({
+                    w: \(Int(adaptedW)),
+                    h: \(Int(adaptedH))
+                });
+
+            })();
+            """
+
+            webView.evaluateJavaScript(js)
+        }
+
+        func userContentController(
+            _ userContentController: WKUserContentController,
+            didReceive message: WKScriptMessage,
+            replyHandler: @escaping (Any?, String?) -> Void
+        ) {
+            if let dict = message.body as? [String: Any] {
+                DispatchQueue.main.async {
+                    self.parent.webWidth = dict["w"] as? Int ?? 0
+                    self.parent.webHeight = dict["h"] as? Int ?? 0
+                }
+            }
+            replyHandler(nil, nil)
+        }
+    }
+}
