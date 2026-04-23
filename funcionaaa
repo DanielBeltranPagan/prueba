@@ -1,0 +1,150 @@
+import SwiftUI
+import WebKit
+
+// MARK: - Main View
+struct ContentView: View {
+    @AppStorage("last_url_saved") private var urlText: String = ""
+    @State private var selectedResolution = "1080p"
+    @State private var showWebView = false
+
+    let resolutions = ["720p", "1080p", "2K", "4K"]
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 25) {
+                Text("WebView Ultra Res").font(.title.bold()).padding(.top, 40)
+
+                TextField("URL", text: $urlText)
+                    .textFieldStyle(.roundedBorder)
+                    .padding(.horizontal)
+
+                Picker("Resolución", selection: $selectedResolution) {
+                    ForEach(resolutions, id: \.self) { Text($0).tag($0) }
+                }.pickerStyle(.segmented).padding(.horizontal)
+
+                Spacer()
+
+                Button("LANZAR") { showWebView = true }
+                    .buttonStyle(.borderedProminent)
+                    .padding(.bottom, 30)
+            }
+            .navigationDestination(isPresented: $showWebView) {
+                WebViewManagerView(urlString: urlText, resolution: selectedResolution)
+            }
+        }
+    }
+}
+
+// MARK: - Manager View
+struct WebViewManagerView: View {
+    let urlString: String
+    let resolution: String
+    @State private var webSize: String = "Cargando..."
+    @State private var isLock = false
+    @State private var rotationID = UUID()
+
+    var body: some View {
+        ZStack {
+            WebViewContainer(urlString: urlString, resolution: resolution, webSize: $webSize)
+                .id(rotationID) // Forzamos recreación limpia al rotar
+                .ignoresSafeArea()
+
+            if isLock {
+                Color.black.ignoresSafeArea().overlay(ProgressView().tint(.white))
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
+            isLock = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                rotationID = UUID()
+                isLock = false
+            }
+        }
+        .navigationBarTitle(webSize, displayMode: .inline)
+    }
+}
+
+// MARK: - WebView Container
+struct WebViewContainer: UIViewRepresentable {
+    let urlString: String
+    let resolution: String
+    @Binding var webSize: String
+
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.allowsInlineMediaPlayback = true
+        config.defaultWebpagePreferences.preferredContentMode = .desktop
+        
+        // SCRIPT DE PRE-INYECCIÓN (Para que no falle al inicio)
+        let userScript = WKUserScript(source: getJS(), injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+        config.userContentController.addUserScript(userScript)
+        
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = context.coordinator
+        webView.customUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        
+        if let url = URL(string: urlString.contains("http") ? urlString : "https://\(urlString)") {
+            webView.load(URLRequest(url: url))
+        }
+        return webView
+    }
+
+    func updateUIView(_ uiView: WKWebView, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    class Coordinator: NSObject, WKNavigationDelegate {
+        var parent: WebViewContainer
+        init(_ parent: WebViewContainer) { self.parent = parent }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            webView.evaluateJavaScript(parent.getJS()) { _, _ in
+                webView.evaluateJavaScript("window.innerWidth + 'x' + window.innerHeight") { res, _ in
+                    if let s = res as? String { self.parent.webSize = s }
+                }
+            }
+        }
+    }
+
+    // LÓGICA DE RESOLUCIÓN PURA
+    func getJS() -> String {
+        let isLandscape = UIScreen.main.bounds.width > UIScreen.main.bounds.height
+        
+        // Definimos los píxeles reales que queremos simular
+        let w: CGFloat
+        let h: CGFloat
+        
+        switch resolution {
+            case "720p": w = 1280; h = 720
+            case "1080p": w = 1920; h = 1080
+            case "2K": w = 2560; h = 1440
+            case "4K": w = 3840; h = 2160
+            default: w = 1920; h = 1080
+        }
+        
+        let targetW = isLandscape ? w : h
+        let targetH = isLandscape ? h : w
+        
+        // Calculamos la escala basada en el ancho físico del dispositivo
+        let screenWidth = UIScreen.main.bounds.width
+        let scale = screenWidth / targetW
+
+        return """
+        (function() {
+            var meta = document.querySelector('meta[name="viewport"]');
+            if (!meta) {
+                meta = document.createElement('meta');
+                meta.name = 'viewport';
+                document.head.appendChild(meta);
+            }
+            // Forzamos el ancho y la escala bloqueada
+            meta.setAttribute('content', 'width=\(Int(targetW)), initial-scale=\(scale), minimum-scale=\(scale), maximum-scale=\(scale), user-scalable=no');
+            
+            // Estilo extra para asegurar que el cuerpo de la web respete el ancho
+            document.documentElement.style.width = '\(Int(targetW))px';
+            document.body.style.width = '\(Int(targetW))px';
+            window.dispatchEvent(new Event('resize'));
+        })();
+        """
+    }
+}
