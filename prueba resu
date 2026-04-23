@@ -1,74 +1,151 @@
 import SwiftUI
 import WebKit
 
-// 🌐 WebView
-struct WebView: UIViewRepresentable {
-    
+// MARK: - Modelo de Datos
+struct Resolution: Identifiable {
+    let id = UUID()
+    let name: String
+    let width: CGFloat
+    let height: CGFloat
+}
+
+// MARK: - Componente WebView (UIKit -> SwiftUI)
+struct OrbysWebView: UIViewRepresentable {
     let url: URL
+    @Binding var webView: WKWebView // Pasamos la referencia para control externo si fuera necesario
     
     func makeUIView(context: Context) -> WKWebView {
-        let webView = WKWebView()
+        let config = WKWebViewConfiguration()
+        // Permitir reproducción de video y JS
+        config.allowsInlineMediaPlayback = true
+        
         webView.allowsBackForwardNavigationGestures = true
+        webView.load(URLRequest(url: url))
         return webView
     }
-
-    func updateUIView(_ uiView: WKWebView, context: Context) {
-        let request = URLRequest(
-            url: url,
-            cachePolicy: .reloadIgnoringLocalCacheData
-        )
-        uiView.load(request)
-    }
-}
-
-// 🧠 Vista principal
-struct ContentView: View {
     
-    @State private var resolution = "1080"
-    @State private var refreshID = UUID() // fuerza recarga
+    func updateUIView(_ uiView: WKWebView, context: Context) {}
+}
 
-    var url: URL {
-        URL(string: "https://orbys.eu?res=\(resolution)")!
-    }
-
+// MARK: - Vista Principal
+struct ContentView: View {
+    @State private var selectedResolution: Resolution? = nil
+    @State private var showWebView = false
+    
+    // Opciones de resolución solicitadas
+    let resolutions = [
+        Resolution(name: "720p (HD)", width: 1280, height: 720),
+        Resolution(name: "1080p (FHD)", width: 1920, height: 1080),
+        Resolution(name: "2K (QHD)", width: 2560, height: 1440),
+        Resolution(name: "4K (UHD)", width: 3840, height: 2160)
+    ]
+    
     var body: some View {
-        VStack(spacing: 0) {
-            
-            // 🎛️ Selector resolución
-            Picker("Resolución", selection: $resolution) {
-                Text("720p").tag("720")
-                Text("1080p").tag("1080")
-                Text("2K").tag("1440")
-                Text("4K").tag("2160")
+        ZStack {
+            if showWebView, let res = selectedResolution {
+                // Si hay una resolución seleccionada, mostramos el navegador
+                BrowserContainer(resolution: res) {
+                    showWebView = false // Acción para volver al selector
+                }
+                .transition(.move(edge: .trailing))
+            } else {
+                // Menú de Selección
+                VStack(spacing: 25) {
+                    VStack(spacing: 10) {
+                        Image(systemName: "tv.and.mediabox.fill")
+                            .font(.system(size: 70))
+                            .foregroundColor(.blue)
+                        
+                        Text("Configurador Orbys.eu")
+                            .font(.title2.bold())
+                        
+                        Text("Selecciona la resolución de renderizado")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.bottom, 20)
+                    
+                    ForEach(resolutions) { res in
+                        Button(action: {
+                            selectedResolution = res
+                            showWebView = true
+                        }) {
+                            HStack {
+                                Text(res.name)
+                                Spacer()
+                                Text("\(Int(res.width))x\(Int(res.height))")
+                                    .font(.caption)
+                                    .opacity(0.7)
+                            }
+                            .bold()
+                            .padding()
+                            .frame(width: 280)
+                            .background(Color.blue)
+                            .foregroundColor(.white)
+                            .cornerRadius(12)
+                            .shadow(radius: 3)
+                        }
+                    }
+                }
             }
-            .pickerStyle(.segmented)
-            .padding()
-
-            // 🌐 WebView
-            WebView(url: url)
-                .id(refreshID) // 🔥 fuerza reload total
         }
-        .onRotate { _ in
-            refreshID = UUID() // 🔄 recarga al girar pantalla
-        }
+        .animation(.easeInOut, value: showWebView)
     }
 }
 
-// 🔄 Detectar rotación de pantalla
-struct DeviceRotationViewModifier: ViewModifier {
-    let action: (UIDeviceOrientation) -> Void
-
-    func body(content: Content) -> some View {
-        content
-            .onAppear()
-            .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
-                action(UIDevice.current.orientation)
+// MARK: - Contenedor del Navegador con Escalado Dinámico
+struct BrowserContainer: View {
+    let resolution: Resolution
+    var onBack: () -> Void
+    
+    @State private var webView = WKWebView()
+    
+    var body: some View {
+        GeometryReader { geo in
+            VStack(spacing: 0) {
+                // Barra de herramientas superior
+                HStack {
+                    Button(action: onBack) {
+                        HStack {
+                            Image(systemName: "arrow.left.circle.fill")
+                            Text("Cambiar Resolución")
+                        }
+                        .padding(10)
+                        .background(Color.gray.opacity(0.1))
+                        .cornerRadius(8)
+                    }
+                    
+                    Spacer()
+                    
+                    Text(resolution.name)
+                        .font(.caption.bold())
+                        .padding(6)
+                        .background(Color.blue.opacity(0.1))
+                        .cornerRadius(5)
+                }
+                .padding(.horizontal)
+                .padding(.top, 5)
+                .frame(height: 50)
+                .background(Color(.systemBackground))
+                
+                // Área del WebView con el truco del ScaleEffect
+                // Esto permite que la web crea que está en 4K aunque el móvil sea pequeño
+                ZStack(alignment: .topLeading) {
+                    OrbysWebView(url: URL(string: "https://orbys.eu")!, webView: $webView)
+                        .frame(width: resolution.width, height: resolution.height)
+                        // Calculamos la escala basada en el ancho actual del dispositivo
+                        .scaleEffect(geo.size.width / resolution.width, anchor: .topLeading)
+                        .frame(
+                            width: geo.size.width,
+                            height: (geo.size.width * resolution.height) / resolution.width,
+                            alignment: .topLeading
+                        )
+                }
+                .background(Color.black)
+                
+                Spacer() // Empuja el contenido hacia arriba
             }
-    }
-}
-
-extension View {
-    func onRotate(perform action: @escaping (UIDeviceOrientation) -> Void) -> some View {
-        self.modifier(DeviceRotationViewModifier(action: action))
+        }
+        .edgesIgnoringSafeArea(.bottom)
     }
 }
