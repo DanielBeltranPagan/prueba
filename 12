@@ -32,10 +32,9 @@ struct ContentView: View {
 
                         ForEach(resoluciones,id:\.self){ r in
                             HStack {
-
                                 Image(systemName:
-                                        selected == r ?
-                                      "largecircle.fill.circle"
+                                        selected == r
+                                      ? "largecircle.fill.circle"
                                       : "circle")
 
                                 Text(r)
@@ -88,6 +87,24 @@ struct WebViewScreen: View {
 }
 
 // =====================================================
+// RESIZABLE CONTAINER (🔥 ROTATION FIX REAL)
+// =====================================================
+
+class ResizableContainer: UIView {
+
+    weak var coordinator: WebViewRepresentable.Coordinator?
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+
+        // se ejecuta EXACTAMENTE cuando rota
+        DispatchQueue.main.asyncAfter(deadline: .now()+0.05) {
+            self.coordinator?.applyResolution()
+        }
+    }
+}
+
+// =====================================================
 // WKWEBVIEW WRAPPER
 // =====================================================
 
@@ -102,7 +119,8 @@ struct WebViewRepresentable: UIViewRepresentable {
 
     func makeUIView(context: Context) -> UIView {
 
-        let container = UIView()
+        let container = ResizableContainer()
+        container.coordinator = context.coordinator
 
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
@@ -112,13 +130,12 @@ struct WebViewRepresentable: UIViewRepresentable {
         webView.translatesAutoresizingMaskIntoConstraints = false
         webView.isHidden = true
 
-        // 🔥 bloqueamos zoom nativo iOS
+        // bloquear zoom nativo iOS
         webView.scrollView.bounces = false
         webView.scrollView.pinchGestureRecognizer?.isEnabled = false
 
         context.coordinator.webView = webView
 
-        // Loader
         let loader = UIActivityIndicatorView(style: .large)
         loader.startAnimating()
         loader.translatesAutoresizingMaskIntoConstraints = false
@@ -136,14 +153,6 @@ struct WebViewRepresentable: UIViewRepresentable {
             loader.centerXAnchor.constraint(equalTo: container.centerXAnchor),
             loader.centerYAnchor.constraint(equalTo: container.centerYAnchor)
         ])
-
-        // Detectar rotación
-        NotificationCenter.default.addObserver(
-            context.coordinator,
-            selector: #selector(Coordinator.orientationChanged),
-            name: UIDevice.orientationDidChangeNotification,
-            object: nil
-        )
 
         setupCookies(url: url)
 
@@ -184,27 +193,9 @@ struct WebViewRepresentable: UIViewRepresentable {
             }
         }
 
-        // ============================
-        // ROTATION FIX
-        // ============================
-
-        @objc func orientationChanged() {
-
-            guard let webView else { return }
-
-            UIView.performWithoutAnimation {
-
-                webView.scrollView.zoomScale = 1
-
-                DispatchQueue.main.asyncAfter(deadline: .now()+0.15) {
-                    self.applyResolution()
-                }
-            }
-        }
-
-        // ============================
-        // RESOLUTION ENGINE FINAL
-        // ============================
+        // =================================================
+        // RESOLUTION ENGINE FINAL (SIN ZOOM IOS)
+        // =================================================
 
         func applyResolution() {
 
@@ -226,7 +217,6 @@ struct WebViewRepresentable: UIViewRepresentable {
             let deviceWidth = webView.bounds.width
             let scale = deviceWidth / CGFloat(targetWidth)
 
-            // 🔥 bloquear zoom interno iOS
             webView.scrollView.minimumZoomScale = 1
             webView.scrollView.maximumZoomScale = 1
             webView.scrollView.zoomScale = 1
@@ -235,19 +225,15 @@ struct WebViewRepresentable: UIViewRepresentable {
             let js = """
             (function(){
 
-                var old =
-                document.querySelector('meta[name="viewport"]');
+                var old=document.querySelector('meta[name="viewport"]');
                 if(old) old.remove();
 
-                var meta = document.createElement('meta');
+                var meta=document.createElement('meta');
                 meta.name="viewport";
-                meta.content=
-                "width=\(targetWidth), initial-scale=\(scale), minimum-scale=\(scale), maximum-scale=\(scale), user-scalable=no";
-
+                meta.content="width=\(targetWidth),initial-scale=\(scale),minimum-scale=\(scale),maximum-scale=\(scale),user-scalable=no";
                 document.head.appendChild(meta);
 
-                var style =
-                document.getElementById('resolution-style')
+                var style=document.getElementById('resolution-style')
                 || document.createElement('style');
 
                 style.id='resolution-style';
@@ -257,7 +243,6 @@ struct WebViewRepresentable: UIViewRepresentable {
                         width:\(targetWidth)px!important;
                         min-width:\(targetWidth)px!important;
                         -webkit-text-size-adjust:100%!important;
-                        text-size-adjust:100%!important;
                     }
                 `;
 
