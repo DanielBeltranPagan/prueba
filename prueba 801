@@ -3,72 +3,99 @@ import WebKit
 
 // MARK: - Main View
 struct ContentView: View {
-    @AppStorage("last_url_saved") private var urlText = ""
-    @State private var selectedRes = "1080p"
+    @AppStorage("last_url_saved") private var urlText: String = ""
+    @State private var selectedResolution = "1080p"
     @State private var showWebView = false
+
+    let resolutions = ["720p", "1080p", "2K", "4K"]
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 20) {
-                Text("WebView Pro").font(.title.bold()).padding(.top)
-                
-                VStack(alignment: .leading) {
-                    Text("URL de destino").font(.caption).foregroundColor(.gray)
-                    TextField("ej: youtube.com", text: $urlText)
-                        .textFieldStyle(.roundedBorder)
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.URL)
-                }.padding(.horizontal)
+            VStack(spacing: 25) {
+                Text("WebView Resolution Pro")
+                    .font(.system(size: 24, weight: .bold))
+                    .padding(.top, 40)
 
-                Picker("Resolución", selection: $selectedRes) {
-                    ForEach(["720p", "1080p", "2K", "4K"], id: \.self) { Text($0) }
-                }.pickerStyle(.segmented).padding(.horizontal)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("URL de destino").font(.caption).foregroundColor(.gray)
+                    TextField("Introduce la URL (ej: youtube.com)", text: $urlText)
+                        .textFieldStyle(.roundedBorder)
+                        .textContentType(.URL)
+                        .keyboardType(.URL)
+                        .autocorrectionDisabled(true)
+                        .textInputAutocapitalization(.never)
+                }
+                .padding(.horizontal)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Resolución Objetivo (Ancho):").font(.subheadline).bold()
+                    Picker("Resolución", selection: $selectedResolution) {
+                        ForEach(resolutions, id: \.self) { Text($0).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                }
+                .padding(.horizontal)
 
                 Spacer()
 
                 Button(action: { showWebView = true }) {
-                    Text("LANZAR EN \(selectedRes)")
-                        .bold().frame(maxWidth: .infinity).padding()
-                        .background(urlText.isEmpty ? Color.gray : Color.blue)
-                        .foregroundColor(.white).cornerRadius(12)
-                }.disabled(urlText.isEmpty).padding()
+                    Text("LANZAR EN \(selectedResolution)")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(urlText.isEmpty ? Color.gray.opacity(0.3) : Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(12)
+                }
+                .disabled(urlText.isEmpty)
+                .padding(.horizontal).padding(.bottom, 30)
             }
             .navigationDestination(isPresented: $showWebView) {
-                WebViewManagerView(urlString: urlText, resolution: selectedRes)
+                WebViewManagerView(urlString: urlText, resolution: selectedResolution)
             }
         }
     }
 }
 
-// MARK: - Manager View (Con pantalla de carga)
+// MARK: - Manager View
 struct WebViewManagerView: View {
     let urlString: String
     let resolution: String
-    @State private var size: (w: Int, h: Int) = (0, 0)
-    @State private var isReady = false 
+    @State private var webSize: (w: Int, h: Int) = (0, 0)
+    @State private var errorMessage: String? = nil
+    @State private var isReady: Bool = false // Pantalla de carga
 
     var body: some View {
         ZStack {
-            // WebView: Invisible hasta que el JS confirme el redimensionado
-            WebViewContainer(urlString: urlString, resolution: resolution, size: $size, isReady: $isReady)
-                .ignoresSafeArea()
-                .opacity(isReady ? 1 : 0)
-            
-            // Pantalla de carga
-            if !isReady {
-                VStack(spacing: 15) {
+            if let error = errorMessage {
+                VStack(spacing: 16) {
+                    Image(systemName: "wifi.slash").font(.system(size: 48)).foregroundColor(.gray)
+                    Text("Error de navegación").font(.headline)
+                    Text(error).font(.caption).foregroundColor(.secondary).multilineTextAlignment(.center)
+                }.padding()
+            } else {
+                // El WebView se oculta hasta que esté listo
+                WebViewContainer(urlString: urlString, resolution: resolution, webSize: $webSize, errorMessage: $errorMessage, isReady: $isReady)
+                    .ignoresSafeArea(.container, edges: .bottom)
+                    .opacity(isReady ? 1 : 0)
+            }
+
+            if !isReady && errorMessage == nil {
+                Color(UIColor.systemBackground).ignoresSafeArea()
+                VStack(spacing: 20) {
                     ProgressView()
-                        .scaleEffect(1.5)
-                    Text("Preparando resolución \(resolution)...")
-                        .font(.subheadline).foregroundColor(.secondary)
+                    Text("Ajustando resolución...").font(.footnote).foregroundColor(.gray)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(UIColor.systemBackground))
             }
         }
         .toolbar {
             ToolbarItem(placement: .principal) {
-                if isReady { Text("\(size.w)x\(size.h)").font(.caption.monospaced().bold()) }
+                HStack(spacing: 6) {
+                    Image(systemName: errorMessage != nil ? "exclamationmark.triangle" : "viewfinder")
+                    Text(errorMessage != nil ? "Error" : (webSize.w > 0 ? "\(webSize.w) × \(webSize.h) px" : "Cargando…"))
+                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                }
+                .foregroundColor(errorMessage != nil ? .orange : .blue)
             }
         }
         .navigationBarTitleDisplayMode(.inline)
@@ -79,7 +106,8 @@ struct WebViewManagerView: View {
 struct WebViewContainer: UIViewRepresentable {
     let urlString: String
     let resolution: String
-    @Binding var size: (w: Int, h: Int)
+    @Binding var webSize: (w: Int, h: Int)
+    @Binding var errorMessage: String?
     @Binding var isReady: Bool
 
     func makeUIView(context: Context) -> WKWebView {
@@ -90,11 +118,11 @@ struct WebViewContainer: UIViewRepresentable {
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.scrollView.contentInsetAdjustmentBehavior = .never
+        webView.customUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
         
-        // Carga inicial
         let formatted = urlString.lowercased().hasPrefix("http") ? urlString : "https://\(urlString)"
         if let url = URL(string: formatted.trimmingCharacters(in: .whitespaces)) {
-            setupCookies(for: url, in: webView)
+            setupCookies(webView: webView, url: url)
             webView.load(URLRequest(url: url))
         }
         return webView
@@ -108,6 +136,21 @@ struct WebViewContainer: UIViewRepresentable {
         init(_ parent: WebViewContainer) { self.parent = parent }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            applyResolution(webView)
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            parent.errorMessage = error.localizedDescription
+        }
+
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            if let dict = message.body as? [String: Int] {
+                parent.webSize = (dict["w"] ?? 0, dict["h"] ?? 0)
+                withAnimation { parent.isReady = true }
+            }
+        }
+
+        private func applyResolution(_ webView: WKWebView) {
             let resMap: [String: (CGFloat, CGFloat)] = ["720p":(1280,720), "1080p":(1920,1080), "2K":(2560,1440), "4K":(3840,2160)]
             let spec = resMap[parent.resolution] ?? (1920, 1080)
             let isLandscape = webView.bounds.width > webView.bounds.height
@@ -121,28 +164,20 @@ struct WebViewContainer: UIViewRepresentable {
                 document.head.appendChild(meta);
                 window.webkit.messageHandlers.resObserver.postMessage({w: \(Int(targetW)), h: \(Int(spec.1))});
             """
-            // Pequeño delay para que el motor de renderizado asimile el cambio antes de mostrarlo
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 webView.evaluateJavaScript(js)
             }
         }
-
-        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-            if let dict = message.body as? [String: Int] {
-                parent.size = (dict["w"] ?? 0, dict["h"] ?? 0)
-                withAnimation { parent.isReady = true }
-            }
-        }
     }
 
-    private func setupCookies(for url: URL, in webView: WKWebView) {
+    private func setupCookies(webView: WKWebView, url: URL) {
         let store = webView.configuration.websiteDataStore.httpCookieStore
         if url.host?.contains("youtube.com") == true {
-            let resValue = resolution.replacingOccurrences(of: "p", with: "")
-            let cookies = ["SOCS": "CAISEwgDEgk4OTk4NzM2MzgaAmVzIAEaBgiA2ZXPBg", "PREF": "f4=4000000&res=\(resValue)"]
+            let res = resolution.replacingOccurrences(of: "p", with: "")
+            let cookies = ["SOCS": "CAISEwgDEgk4OTk4NzM2MzgaAmVzIAEaBgiA2ZXPBg", "PREF": "f4=4000000&res=\(res)"]
             cookies.forEach { name, value in
-                let props: [HTTPCookiePropertyKey: Any] = [.name: name, .value: value, .domain: ".youtube.com", .path: "/", .expires: Date(timeIntervalSinceNow: 31536000)]
-                if let c = HTTPCookie(properties: props) { store.setCookie(c) }
+                let p: [HTTPCookiePropertyKey: Any] = [.name: name, .value: value, .domain: ".youtube.com", .path: "/", .expires: Date(timeIntervalSinceNow: 31536000)]
+                if let c = HTTPCookie(properties: p) { store.setCookie(c) }
             }
         }
     }
