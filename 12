@@ -1,9 +1,9 @@
 import SwiftUI
 import WebKit
 
-// ======================================================
-// MARK: MAIN SCREEN (igual que Compose)
-// ======================================================
+// =====================================================
+// MAIN SCREEN
+// =====================================================
 
 struct ContentView: View {
 
@@ -36,8 +36,7 @@ struct ContentView: View {
                                 Image(systemName:
                                         selected == r ?
                                       "largecircle.fill.circle"
-                                      : "circle"
-                                )
+                                      : "circle")
 
                                 Text(r)
                             }
@@ -70,9 +69,9 @@ struct ContentView: View {
     }
 }
 
-// ======================================================
-// MARK: WEBVIEW SCREEN
-// ======================================================
+// =====================================================
+// WEBVIEW SCREEN
+// =====================================================
 
 struct WebViewScreen: View {
 
@@ -88,9 +87,9 @@ struct WebViewScreen: View {
     }
 }
 
-// ======================================================
-// MARK: WKWEBVIEW WRAPPER
-// ======================================================
+// =====================================================
+// WKWEBVIEW WRAPPER
+// =====================================================
 
 struct WebViewRepresentable: UIViewRepresentable {
 
@@ -112,6 +111,8 @@ struct WebViewRepresentable: UIViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.translatesAutoresizingMaskIntoConstraints = false
         webView.isHidden = true
+
+        // 🔥 bloqueamos zoom nativo iOS
         webView.scrollView.bounces = false
         webView.scrollView.pinchGestureRecognizer?.isEnabled = false
 
@@ -147,9 +148,7 @@ struct WebViewRepresentable: UIViewRepresentable {
         setupCookies(url: url)
 
         let finalUrl =
-        url.starts(with:"http")
-        ? url
-        : "https://\(url)"
+        url.starts(with:"http") ? url : "https://\(url)"
 
         webView.load(URLRequest(url: URL(string: finalUrl)!))
 
@@ -158,9 +157,9 @@ struct WebViewRepresentable: UIViewRepresentable {
 
     func updateUIView(_ uiView: UIView, context: Context) {}
 
-    // ==================================================
-    // MARK: COORDINATOR
-    // ==================================================
+    // =====================================================
+    // COORDINATOR
+    // =====================================================
 
     class Coordinator: NSObject, WKNavigationDelegate {
 
@@ -185,9 +184,9 @@ struct WebViewRepresentable: UIViewRepresentable {
             }
         }
 
-        // ===============================
-        // ROTATION FIX (SIN ZOOM)
-        // ===============================
+        // ============================
+        // ROTATION FIX
+        // ============================
 
         @objc func orientationChanged() {
 
@@ -195,17 +194,17 @@ struct WebViewRepresentable: UIViewRepresentable {
 
             UIView.performWithoutAnimation {
 
-                webView.scrollView.zoomScale = 1.0
+                webView.scrollView.zoomScale = 1
 
-                DispatchQueue.main.asyncAfter(deadline: .now()+0.1) {
+                DispatchQueue.main.asyncAfter(deadline: .now()+0.15) {
                     self.applyResolution()
                 }
             }
         }
 
-        // ===============================
-        // RESOLUTION ENGINE
-        // ===============================
+        // ============================
+        // RESOLUTION ENGINE FINAL
+        // ============================
 
         func applyResolution() {
 
@@ -220,14 +219,32 @@ struct WebViewRepresentable: UIViewRepresentable {
                 case "4K": return 3840
                 default: return 1280
                 }
-
             }()
+
+            webView.layoutIfNeeded()
 
             let deviceWidth = webView.bounds.width
             let scale = deviceWidth / CGFloat(targetWidth)
 
+            // 🔥 bloquear zoom interno iOS
+            webView.scrollView.minimumZoomScale = 1
+            webView.scrollView.maximumZoomScale = 1
+            webView.scrollView.zoomScale = 1
+            webView.scrollView.bouncesZoom = false
+
             let js = """
             (function(){
+
+                var old =
+                document.querySelector('meta[name="viewport"]');
+                if(old) old.remove();
+
+                var meta = document.createElement('meta');
+                meta.name="viewport";
+                meta.content=
+                "width=\(targetWidth), initial-scale=\(scale), minimum-scale=\(scale), maximum-scale=\(scale), user-scalable=no";
+
+                document.head.appendChild(meta);
 
                 var style =
                 document.getElementById('resolution-style')
@@ -235,25 +252,17 @@ struct WebViewRepresentable: UIViewRepresentable {
 
                 style.id='resolution-style';
 
-                style.innerHTML=
-                'html,body{min-width:\(targetWidth)px!important;width:\(targetWidth)px!important;}';
+                style.innerHTML=`
+                    html,body{
+                        width:\(targetWidth)px!important;
+                        min-width:\(targetWidth)px!important;
+                        -webkit-text-size-adjust:100%!important;
+                        text-size-adjust:100%!important;
+                    }
+                `;
 
                 if(!style.parentNode)
                     document.head.appendChild(style);
-
-                var meta =
-                document.querySelector('meta[name="viewport"]')
-                || document.createElement('meta');
-
-                meta.name="viewport";
-
-                meta.setAttribute(
-                    'content',
-                    'width=\(targetWidth),initial-scale=\(scale),minimum-scale=\(scale),maximum-scale=\(scale),user-scalable=yes'
-                );
-
-                if(!meta.parentNode)
-                    document.head.appendChild(meta);
 
             })();
             """
@@ -263,9 +272,9 @@ struct WebViewRepresentable: UIViewRepresentable {
     }
 }
 
-// ======================================================
-// MARK: COOKIE BYPASS
-// ======================================================
+// =====================================================
+// COOKIE BYPASS
+// =====================================================
 
 func setupCookies(url:String) {
 
