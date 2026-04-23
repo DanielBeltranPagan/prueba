@@ -1,0 +1,47 @@
+import SwiftUI
+import WebKit
+
+// 🌐 WebView (WKWebView envuelto para SwiftUI)
+struct WebView: UIViewRepresentable {
+    
+    let url: URL
+    
+    func makeUIView(context: Context) -> WKWebView {
+        let webView = WKWebView()
+        webView.allowsBackForwardNavigationGestures = true
+        return webView
+    }
+
+    func updateUIView(_ uiView: WKWebView, context: Context) {
+        uiView.load(URLRequest(url: url))
+    }
+}
+
+// 🧠 Vista principal
+struct ContentView: View {
+    
+    @State private var resolution = "1080"
+    
+    var url: URL {
+        URL(string: "https://orbys.eu?res=\(resolution)")!
+    }
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            
+            // 🎛️ Selector de resolución
+            Picker("Resolución", selection: $resolution) {
+                Text("720p").tag("720")
+                Text("1080p").tag("1080")
+                Text("2K").tag("1440")
+                Text("4K").tag("2160")
+            }
+            .pickerStyle(SegmentedPickerStyle())
+            .padding()
+            
+            // 🌐 Web
+            WebView(url: url)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
