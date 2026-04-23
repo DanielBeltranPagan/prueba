@@ -71,8 +71,6 @@ struct WebViewManagerView: View {
     let urlString: String
     let resolution: String
 
-    // w = ancho CSS que ve el sitio web (ej: 1280 para 720p)
-    // h = altura visible en pantalla en px CSS (sin scroll)
     @State private var webWidth: Int = 0
     @State private var webHeight: Int = 0
     @State private var errorMessage: String? = nil
@@ -111,7 +109,7 @@ struct WebViewManagerView: View {
                         Text("Error")
                             .font(.system(size: 14, weight: .bold))
                     } else if webWidth > 0 {
-                        // Ancho × alto visible del viewport configurado
+                        // Muestra la resolución estándar confirmada: ej "1280 × 720 px"
                         Text("\(webWidth) × \(webHeight) px")
                             .font(.system(size: 14, weight: .bold, design: .monospaced))
                     } else {
@@ -134,7 +132,7 @@ struct WebViewContainer: UIViewRepresentable {
     @Binding var webHeight: Int
     @Binding var errorMessage: String?
 
-    /// Ancho lógico CSS que queremos forzar en el sitio web
+    // Ancho CSS estándar de la resolución
     var targetWidth: CGFloat {
         switch resolution {
         case "720p":  return 1280
@@ -142,6 +140,17 @@ struct WebViewContainer: UIViewRepresentable {
         case "2K":    return 2560
         case "4K":    return 3840
         default:      return 1920
+        }
+    }
+
+    // Alto CSS estándar de la resolución (relación 16:9)
+    var targetHeight: CGFloat {
+        switch resolution {
+        case "720p":  return 720
+        case "1080p": return 1080
+        case "2K":    return 1440
+        case "4K":    return 2160
+        default:      return 1080
         }
     }
 
@@ -178,8 +187,7 @@ struct WebViewContainer: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
-        // Vacío intencionalmente: carga y script se gestionan en makeUIView
-        // y en los callbacks del WKNavigationDelegate.
+        // Vacío intencionalmente.
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -199,7 +207,6 @@ struct WebViewContainer: UIViewRepresentable {
 
         init(_ parent: WebViewContainer) { self.parent = parent }
 
-        // MARK: WKScriptMessageHandlerWithReply
         func userContentController(
             _ userContentController: WKUserContentController,
             didReceive message: WKScriptMessage,
@@ -216,7 +223,6 @@ struct WebViewContainer: UIViewRepresentable {
             replyHandler(nil, nil)
         }
 
-        // MARK: WKNavigationDelegate
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             scriptInjected = false
             applyViewportScript(webView)
@@ -248,64 +254,64 @@ struct WebViewContainer: UIViewRepresentable {
             scriptInjected = true
 
             let targetW = parent.targetWidth
+            let targetH = parent.targetHeight
 
-            // ─── CÁLCULO CORRECTO DEL SCALE ──────────────────────────────────────────
+            // ─── LÓGICA DEL SCALE ────────────────────────────────────────────────────
             //
-            // Leemos el ancho de la WKWebView en PUNTOS UIKit desde Swift,
-            // ANTES de que JS modifique nada. Esto evita el problema anterior donde
-            // window.innerWidth ya estaba contaminado por el viewport modificado.
+            // Leemos el ancho físico de la WKWebView en puntos UIKit desde Swift.
+            // Esto es lo que mide la pantalla del dispositivo (ej: 390 pts en iPhone 14 Pro).
             //
-            // Ejemplo 720p en iPhone 14 Pro (390 pts de ancho):
+            // scale = puntosDisponibles / anchoCSS_objetivo
+            //
+            // Ejemplo 720p en iPhone 14 Pro (390 pts ancho):
             //   scale = 390 / 1280 = 0.3047
-            //   → El sitio renderiza como si tuviera 1280px de ancho CSS
-            //   → Se escala visualmente a 390 puntos de pantalla  ✓
+            //   El sitio web renderiza en un espacio de 1280 × 720 px CSS
+            //   y ese espacio se escala visualmente a 390 × ~119 pts de pantalla.
             //
-            // La altura visible = puntos de alto / scale
-            //   = 844 / 0.3047 = ~2770 px CSS  (razonable, no 11543)
+            // Ejemplo 1080p en el mismo iPhone:
+            //   scale = 390 / 1920 = 0.2031
+            //   → Se ve más alejado que 720p, correcto porque es mayor resolución.
+            //
+            // El viewport también recibe height=targetH para respetar la relación
+            // de aspecto estándar 16:9 y evitar que el sitio calcule alturas incorrectas.
             // ─────────────────────────────────────────────────────────────────────────
 
             let deviceWidthPts = webView.bounds.width > 0
                 ? webView.bounds.width
                 : UIScreen.main.bounds.width
 
-            let deviceHeightPts = webView.bounds.height > 0
-                ? webView.bounds.height
-                : UIScreen.main.bounds.height
-
             let scale = deviceWidthPts / targetW
-
-            // Altura visible en px CSS (lo que cabe en pantalla sin scroll)
-            let visibleHeightCSS = Int((deviceHeightPts / scale).rounded())
 
             let js = """
             (function() {
-                var targetW  = \(Int(targetW));
-                var scale    = \(scale);
-                var visibleH = \(visibleHeightCSS);
+                var targetW = \(Int(targetW));
+                var targetH = \(Int(targetH));
+                var scale   = \(scale);
 
-                // Aplicar el viewport con valores calculados desde Swift.
-                // NO usamos window.innerWidth aquí porque puede estar ya distorsionado
-                // si el viewport fue modificado en una carga anterior.
                 var meta = document.querySelector('meta[name="viewport"]');
                 if (!meta) {
                     meta = document.createElement('meta');
                     meta.name = 'viewport';
                     document.head.appendChild(meta);
                 }
+
+                // width + height fijan exactamente el espacio de renderizado (ej: 1280×720).
+                // initial-scale/min/max-scale fijan el zoom para que ese espacio
+                // quepa exactamente en la pantalla física del dispositivo.
                 meta.setAttribute('content',
-                    'width='          + targetW  +
-                    ',initial-scale=' + scale    +
-                    ',minimum-scale=' + scale    +
-                    ',maximum-scale=' + scale    +
+                    'width='          + targetW +
+                    ',height='        + targetH +
+                    ',initial-scale=' + scale   +
+                    ',minimum-scale=' + scale   +
+                    ',maximum-scale=' + scale   +
                     ',user-scalable=no'
                 );
 
-                // Reportar ancho configurado + altura visible (sin scroll).
-                // Esto es lo que tiene sentido mostrar en el toolbar:
-                // "1280 × 2770 px" para 720p, no "1280 × 11543 px" (scroll total).
+                // Reportar resolución estándar confirmada al toolbar.
+                // "1280 × 720" para 720p, "1920 × 1080" para 1080p, etc.
                 window.webkit.messageHandlers.resObserver.postMessage({
                     w: targetW,
-                    h: visibleH
+                    h: targetH
                 });
             })();
             """
