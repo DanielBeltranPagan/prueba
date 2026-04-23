@@ -6,61 +6,45 @@ import WebKit
 // =====================================================
 
 struct ContentView: View {
-
     @State private var url = ""
     let resoluciones = ["720p", "1080p", "2K", "4K"]
     @State private var selected = "720p"
     @State private var launch = false
 
     var body: some View {
-
         NavigationStack {
-
             ScrollView {
-
                 VStack(spacing: 20) {
-
                     Text("WebView Resolution Pro")
-                        .font(.title)
+                        .font(.title).bold()
 
                     TextField("URL (ej: google.com)", text: $url)
                         .textFieldStyle(.roundedBorder)
                         .autocapitalization(.none)
+                        .keyboardType(.URL)
 
-                    VStack(alignment: .leading) {
-
-                        Text("Resolución de renderizado:")
-
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Resolución de renderizado:").font(.headline)
                         ForEach(resoluciones, id: \.self) { r in
                             HStack {
-                                Image(systemName:
-                                        selected == r
-                                      ? "largecircle.fill.circle"
-                                      : "circle")
-
+                                Image(systemName: selected == r ? "largecircle.fill.circle" : "circle")
+                                    .foregroundColor(.blue)
                                 Text(r)
                             }
-                            .onTapGesture {
-                                selected = r
-                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture { selected = r }
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                     Button("LANZAR EN \(selected)") {
-                        if !url.isEmpty {
-                            launch = true
-                        }
+                        if !url.isEmpty { launch = true }
                     }
                     .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
 
-                    NavigationLink(
-                        "",
-                        isActive: $launch
-                    ) {
-                        WebViewScreen(
-                            url: url,
-                            resolution: selected
-                        )
+                    NavigationLink("", isActive: $launch) {
+                        WebViewScreen(url: url, resolution: selected)
                     }
                 }
                 .padding()
@@ -74,7 +58,6 @@ struct ContentView: View {
 // =====================================================
 
 struct WebViewScreen: View {
-
     var url: String
     var resolution: String
 
@@ -87,162 +70,97 @@ struct WebViewScreen: View {
             )
         }
         .ignoresSafeArea()
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
 // =====================================================
-// WKWEBVIEW WRAPPER (ROTATION FIX REAL)
+// WKWEBVIEW WRAPPER (FIX FINAL PARA 2K/4K)
 // =====================================================
 
 struct WebViewRepresentable: UIViewRepresentable {
-
     var url: String
     var resolution: String
     var viewSize: CGSize
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    func makeUIView(context: Context) -> UIView {
-
-        let container = UIView()
-        
+    func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
-        config.websiteDataStore = .default()
-
+        config.allowsInlineMediaPlayback = true
+        
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
-        webView.translatesAutoresizingMaskIntoConstraints = false
-        webView.isHidden = true
-
-        // Bloquear zoom nativo iOS
         webView.scrollView.bounces = false
-        webView.scrollView.pinchGestureRecognizer?.isEnabled = false
-
-        context.coordinator.webView = webView
-
-        let loader = UIActivityIndicatorView(style: .large)
-        loader.startAnimating()
-        loader.translatesAutoresizingMaskIntoConstraints = false
-        context.coordinator.loader = loader
-
-        container.addSubview(webView)
-        container.addSubview(loader)
-
-        NSLayoutConstraint.activate([
-            webView.topAnchor.constraint(equalTo: container.topAnchor),
-            webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-
-            loader.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-            loader.centerYAnchor.constraint(equalTo: container.centerYAnchor)
-        ])
-
+        webView.scrollView.minimumZoomScale = 1.0
+        webView.scrollView.maximumZoomScale = 1.0
+        
         setupCookies(url: url)
-
+        
         let finalUrl = url.starts(with:"http") ? url : "https://\(url)"
-        
-        if let safeUrl = URL(string: finalUrl) {
-            webView.load(URLRequest(url: safeUrl))
+        if let urlObj = URL(string: finalUrl) {
+            webView.load(URLRequest(url: urlObj))
         }
-
-        return container
-    }
-
-    func updateUIView(_ uiView: UIView, context: Context) {
-        // Mantiene la referencia actualizada para que el coordinador sepa la resolución elegida
-        context.coordinator.parent = self
         
-        // Se ejecuta automáticamente al rotar o cambiar el tamaño del GeometryReader
-        context.coordinator.applyResolution(size: viewSize)
+        return webView
     }
 
-    // =====================================================
-    // COORDINATOR
-    // =====================================================
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        context.coordinator.parent = self
+        context.coordinator.applyResolution(webView: webView, size: viewSize)
+    }
 
     class Coordinator: NSObject, WKNavigationDelegate {
-
         var parent: WebViewRepresentable
-        weak var webView: WKWebView?
-        weak var loader: UIActivityIndicatorView?
+        init(_ parent: WebViewRepresentable) { self.parent = parent }
 
-        init(_ parent: WebViewRepresentable) {
-            self.parent = parent
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            applyResolution(webView: webView, size: parent.viewSize)
         }
 
-        func webView(
-            _ webView: WKWebView,
-            didFinish navigation: WKNavigation!
-        ) {
+        func applyResolution(webView: WKWebView, size: CGSize) {
+            guard size.width > 0 else { return }
 
-            applyResolution(size: parent.viewSize)
-
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                self.loader?.stopAnimating()
-                webView.isHidden = false
-            }
-        }
-
-        // =================================================
-        // RESOLUTION ENGINE FINAL (SIN ZOOM IOS)
-        // =================================================
-
-        func applyResolution(size: CGSize) {
-
-            // Prevenimos fallos si la vista aún no tiene dimensiones
-            guard let webView = webView, size.width > 0 else { return }
-
-            let targetWidth: Int = {
-
+            let targetWidth: CGFloat = {
                 switch parent.resolution {
-                case "720p": return 720
-                case "1080p": return 1280
+                case "720p": return 1280 // Standard HD
+                case "1080p": return 1920
                 case "2K": return 2560
                 case "4K": return 3840
-                default: return 1280
+                default: return 1920
                 }
             }()
 
-            let scale = size.width / CGFloat(targetWidth)
-
-            webView.scrollView.minimumZoomScale = 1
-            webView.scrollView.maximumZoomScale = 1
-            webView.scrollView.zoomScale = 1
-            webView.scrollView.bouncesZoom = false
+            let scale = size.width / targetWidth
 
             let js = """
             (function(){
+                // 1. Forzar Viewport
+                var meta = document.querySelector('meta[name="viewport"]') || document.createElement('meta');
+                meta.name = "viewport";
+                meta.content = "width=\(targetWidth), initial-scale=\(scale), minimum-scale=\(scale), maximum-scale=\(scale), user-scalable=no";
+                if(!meta.parentNode) document.head.appendChild(meta);
 
-                var old=document.querySelector('meta[name="viewport"]');
-                if(old) old.remove();
-
-                var meta=document.createElement('meta');
-                meta.name="viewport";
-                meta.content="width=\(targetWidth),initial-scale=\(scale),minimum-scale=\(scale),maximum-scale=\(scale),user-scalable=no";
-                document.head.appendChild(meta);
-
-                var style=document.getElementById('resolution-style') 
-                || document.createElement('style');
-
-                style.id='resolution-style';
-
-                style.innerHTML=`
-                    html,body{
-                        width:\(targetWidth)px!important;
-                        min-width:\(targetWidth)px!important;
-                        -webkit-text-size-adjust:100%!important;
+                // 2. Forzar CSS para evitar el zoom automático de iOS
+                var style = document.getElementById('res-fix') || document.createElement('style');
+                style.id = 'res-fix';
+                style.innerHTML = `
+                    html, body {
+                        width: \(targetWidth)px !important;
+                        overflow-x: hidden !important;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                        -webkit-text-size-adjust: 100% !important;
+                        position: absolute;
+                        top: 0; left: 0;
                     }
                 `;
-
-                if(!style.parentNode)
-                    document.head.appendChild(style);
-
+                if(!style.parentNode) document.head.appendChild(style);
+                
+                // 3. Re-ajustar el scroll al origen
+                window.scrollTo(0,0);
             })();
             """
-
             webView.evaluateJavaScript(js)
         }
     }
@@ -253,33 +171,16 @@ struct WebViewRepresentable: UIViewRepresentable {
 // =====================================================
 
 func setupCookies(url: String) {
-
     let store = WKWebsiteDataStore.default().httpCookieStore
-
     func set(_ name: String, _ value: String, _ domain: String) {
-
         let props: [HTTPCookiePropertyKey: Any] = [
-            .name: name,
-            .value: value,
-            .domain: domain,
-            .path: "/",
-            .expires: Date(timeIntervalSinceNow: 31536000)
+            .name: name, .value: value, .domain: domain,
+            .path: "/", .expires: Date(timeIntervalSinceNow: 31536000)
         ]
-
-        if let cookie = HTTPCookie(properties: props) {
-            store.setCookie(cookie)
-        }
+        if let cookie = HTTPCookie(properties: props) { store.setCookie(cookie) }
     }
-
-    if url.contains("orbys.eu") {
-        set("orbys-consent-cookie", "true", ".orbys.eu")
-    }
-
+    if url.contains("orbys.eu") { set("orbys-consent-cookie", "true", ".orbys.eu") }
     if url.contains("youtube.com") {
-        set(
-            "SOCS",
-            "CAISEwgDEgk4OTk4NzM2MzgaAmVzIAEaBgiA2ZXPBg",
-            ".youtube.com"
-        )
+        set("SOCS", "CAISEwgDEgk4OTk4NzM2MzgaAmVzIAEaBgiA2ZXPBg", ".youtube.com")
     }
 }
