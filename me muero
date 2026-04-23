@@ -1,0 +1,182 @@
+import SwiftUI
+import WebKit
+
+// MARK: - Manager View
+struct WebViewManagerView: View {
+    let urlString: String
+    let resolution: String
+
+    @State private var webWidth: Int = 0
+    @State private var webHeight: Int = 0
+    @State private var errorMessage: String? = nil
+
+    var body: some View {
+        ZStack {
+            WebViewContainer(
+                urlString: urlString,
+                resolution: resolution,
+                webWidth: $webWidth,
+                webHeight: $webHeight,
+                errorMessage: $errorMessage
+            )
+            .ignoresSafeArea(.container, edges: .bottom)
+        }
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                HStack(spacing: 6) {
+                    Image(systemName: "viewfinder")
+                    Text("\(webWidth) × \(webHeight) px")
+                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                }
+                .foregroundColor(.blue)
+            }
+        }
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+// MARK: - WebView Container
+struct WebViewContainer: UIViewRepresentable {
+    let urlString: String
+    let resolution: String
+    @Binding var webWidth: Int
+    @Binding var webHeight: Int
+    @Binding var errorMessage: String?
+
+    // Lados base según la resolución elegida
+    var baseLongSide: CGFloat {
+        switch resolution {
+        case "720p": return 1280
+        case "1080p": return 1920
+        case "2K": return 2560
+        case "4K": return 3840
+        default: return 1920
+        }
+    }
+    
+    var baseShortSide: CGFloat {
+        switch resolution {
+        case "720p": return 720
+        case "1080p": return 1080
+        case "2K": return 1440
+        case "4K": return 2160
+        default: return 1080
+        }
+    }
+
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        let contentController = WKUserContentController()
+        
+        // Usamos el nuevo sistema de MessageHandler para evitar fugas de memoria
+        contentController.addScriptMessageHandler(context.coordinator, contentWorld: .page, name: "resObserver")
+        
+        config.userContentController = contentController
+        config.defaultWebpagePreferences.preferredContentMode = .desktop
+        config.allowsInlineMediaPlayback = true
+
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = context.coordinator
+        webView.customUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+        
+        // Importante para que no haya saltos visuales
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
+        webView.scrollView.bounces = false 
+
+        setupCookies(webView: webView)
+
+        var finalUrl = urlString.trimmingCharacters(in: .whitespaces)
+        if !finalUrl.lowercased().hasPrefix("http") { finalUrl = "https://\(finalUrl)" }
+        if let url = URL(string: finalUrl) {
+            webView.load(URLRequest(url: url))
+        }
+
+        return webView
+    }
+
+    // --- EL CONSEJO EXTRA ---
+    // Esta función se ejecuta CADA VEZ que el iPhone rota o la vista cambia de tamaño.
+    func updateUIView(_ uiView: WKWebView, context: Context) {
+        // Esperamos un pelín a que el "frame" del sistema se asiente tras la rotación
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            context.coordinator.applyViewportScript(uiView)
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWithReply {
+        var parent: WebViewContainer
+        
+        init(_ parent: WebViewContainer) { self.parent = parent }
+
+        func userContentController(_ userContentController: WKUserContentController, 
+                                 didReceive message: WKScriptMessage, 
+                                 replyHandler: @escaping (Any?, String?) -> Void) {
+            if let dict = message.body as? [String: Any] {
+                DispatchQueue.main.async {
+                    self.parent.webWidth = dict["w"] as? Int ?? 0
+                    self.parent.webHeight = dict["h"] as? Int ?? 0
+                }
+            }
+            replyHandler(nil, nil)
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            applyViewportScript(webView)
+        }
+
+        func applyViewportScript(_ webView: WKWebView) {
+            let width = webView.bounds.width
+            let height = webView.bounds.height
+            
+            // Si el ancho es 0, la vista aún no está lista, ignoramos
+            guard width > 0 else { return }
+
+            let isLandscape = width > height
+            
+            // Determinamos qué resolución aplicar según la orientación actual
+            let targetW = isLandscape ? parent.baseLongSide : parent.baseShortSide
+            let targetH = isLandscape ? parent.baseShortSide : parent.baseLongSide
+            
+            // El factor de escala mágico para que no se vea ni pequeño ni gigante
+            let scale = width / targetW
+
+            let js = """
+            (function() {
+                var meta = document.querySelector('meta[name="viewport"]');
+                if (!meta) {
+                    meta = document.createElement('meta');
+                    meta.name = 'viewport';
+                    document.head.appendChild(meta);
+                }
+                meta.setAttribute('content', 'width=' + \(Int(targetW)) + ', initial-scale=' + \(scale) + ', minimum-scale=' + \(scale) + ', maximum-scale=' + \(scale) + ', user-scalable=no');
+                
+                // Forzamos a la web a repintarse
+                window.dispatchEvent(new Event('resize'));
+                
+                window.webkit.messageHandlers.resObserver.postMessage({w: \(Int(targetW)), h: \(Int(targetH))});
+            })();
+            """
+            
+            webView.evaluateJavaScript(js, completionHandler: nil)
+        }
+    }
+
+    private func setupCookies(webView: WKWebView) {
+        // ... (Tu código de cookies de YouTube, etc. se mantiene igual)
+        var finalUrl = urlString.trimmingCharacters(in: .whitespaces)
+        if !finalUrl.lowercased().hasPrefix("http") { finalUrl = "https://\(finalUrl)" }
+        guard let parsedURL = URL(string: finalUrl), let host = parsedURL.host else { return }
+        let cookieStore = webView.configuration.websiteDataStore.httpCookieStore
+        func addCookie(name: String, value: String, domain: String) {
+            let props: [HTTPCookiePropertyKey: Any] = [.name: name, .value: value, .domain: domain, .path: "/", .expires: Date(timeIntervalSinceNow: 31536000)]
+            if let cookie = HTTPCookie(properties: props) { cookieStore.setCookie(cookie) }
+        }
+        if host.contains("youtube.com") {
+            let resValue: String
+            switch resolution { case "4K": resValue = "2160"; case "2K": resValue = "1440"; case "720p": resValue = "720"; default: resValue = "1080" }
+            addCookie(name: "PREF", value: "f4=4000000&res=\(resValue)", domain: ".youtube.com")
+        }
+    }
+}
