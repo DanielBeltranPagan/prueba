@@ -1,0 +1,273 @@
+import SwiftUI
+import WebKit
+
+// ==============================
+// MAIN SCREEN (Compose -> SwiftUI)
+// ==============================
+
+struct ContentView: View {
+
+    @State private var url = ""
+    let resoluciones = ["720p","1080p","2K","4K"]
+    @State private var selected = "720p"
+
+    @State private var launch = false
+
+    var body: some View {
+
+        NavigationStack {
+
+            ScrollView {
+
+                VStack(spacing:20) {
+
+                    Text("WebView Resolution Pro")
+                        .font(.title)
+
+                    TextField("URL (ej: google.com)", text: $url)
+                        .textFieldStyle(.roundedBorder)
+
+                    VStack(alignment:.leading) {
+
+                        Text("Resolución de renderizado:")
+
+                        ForEach(resoluciones,id:\.self){ r in
+                            HStack {
+
+                                Image(systemName:
+                                        selected == r ?
+                                      "largecircle.fill.circle"
+                                      : "circle"
+                                )
+
+                                Text(r)
+                            }
+                            .onTapGesture {
+                                selected = r
+                            }
+                        }
+                    }
+
+                    Button("LANZAR EN \(selected)") {
+
+                        if !url.isEmpty {
+                            launch = true
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    NavigationLink(
+                        "",
+                        isActive: $launch
+                    ){
+                        WebViewScreen(
+                            url: url,
+                            resolution: selected
+                        )
+                    }
+                }
+                .padding()
+            }
+        }
+    }
+}
+
+//////////////////////////////////////////////////////////////
+// MARK: - WEBVIEW SCREEN (WebViewActivity Android)
+//////////////////////////////////////////////////////////////
+
+struct WebViewScreen: View {
+
+    var url: String
+    var resolution: String
+
+    var body: some View {
+        WebViewRepresentable(
+            url: url,
+            resolution: resolution
+        )
+        .ignoresSafeArea()
+    }
+}
+
+//////////////////////////////////////////////////////////////
+// MARK: - WKWEBVIEW WRAPPER
+//////////////////////////////////////////////////////////////
+
+struct WebViewRepresentable: UIViewRepresentable {
+
+    var url: String
+    var resolution: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeUIView(context: Context) -> UIView {
+
+        let container = UIView()
+
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .default()
+
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = context.coordinator
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        webView.isHidden = true
+
+        context.coordinator.webView = webView
+
+        // Loader
+        let loader = UIActivityIndicatorView(style: .large)
+        loader.startAnimating()
+        loader.translatesAutoresizingMaskIntoConstraints = false
+        context.coordinator.loader = loader
+
+        container.addSubview(webView)
+        container.addSubview(loader)
+
+        NSLayoutConstraint.activate([
+            webView.topAnchor.constraint(equalTo: container.topAnchor),
+            webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+
+            loader.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            loader.centerYAnchor.constraint(equalTo: container.centerYAnchor)
+        ])
+
+        setupCookies(url: url)
+
+        let finalUrl =
+            url.starts(with:"http") ?
+            url :
+            "https://\(url)"
+
+        webView.load(URLRequest(url: URL(string: finalUrl)!))
+
+        return container
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {}
+
+    //////////////////////////////////////////////////////////
+    // MARK: COORDINATOR
+    //////////////////////////////////////////////////////////
+
+    class Coordinator: NSObject, WKNavigationDelegate {
+
+        var parent: WebViewRepresentable
+        weak var webView: WKWebView?
+        weak var loader: UIActivityIndicatorView?
+
+        init(_ parent: WebViewRepresentable) {
+            self.parent = parent
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            didFinish navigation: WKNavigation!
+        ) {
+
+            applyResolution()
+
+            DispatchQueue.main.asyncAfter(deadline: .now()+0.4){
+                self.loader?.stopAnimating()
+                webView.isHidden = false
+            }
+        }
+
+        //////////////////////////////////////////////////////
+        // RESOLUTION FAKE (igual Android)
+        //////////////////////////////////////////////////////
+
+        func applyResolution() {
+
+            guard let webView else { return }
+
+            let targetWidth:Int = {
+
+                switch parent.resolution {
+                case "720p": return 720
+                case "1080p": return 1280
+                case "2K": return 2560
+                case "4K": return 3840
+                default: return 1280
+                }
+
+            }()
+
+            let deviceWidth =
+                UIScreen.main.bounds.width
+
+            let scale = deviceWidth / CGFloat(targetWidth)
+
+            let js = """
+            (function() {
+
+                var style = document.getElementById('resolution-style')
+                || document.createElement('style');
+
+                style.id='resolution-style';
+
+                style.innerHTML=
+                'html, body { min-width:\(targetWidth)px !important; width:\(targetWidth)px !important;}';
+
+                if(!style.parentNode)
+                    document.head.appendChild(style);
+
+                var meta =
+                document.querySelector('meta[name="viewport"]')
+                || document.createElement('meta');
+
+                meta.name="viewport";
+
+                meta.setAttribute(
+                    'content',
+                    'width=\(targetWidth), initial-scale=\(scale), minimum-scale=\(scale), maximum-scale=\(scale), user-scalable=yes'
+                );
+
+                if(!meta.parentNode)
+                    document.head.appendChild(meta);
+
+            })();
+            """
+
+            webView.evaluateJavaScript(js)
+        }
+    }
+}
+
+//////////////////////////////////////////////////////////////
+// MARK: COOKIE BYPASS (Android -> iOS)
+//////////////////////////////////////////////////////////////
+
+func setupCookies(url:String) {
+
+    let store = WKWebsiteDataStore.default().httpCookieStore
+
+    func set(_ name:String,_ value:String,_ domain:String){
+
+        var props:[HTTPCookiePropertyKey:Any] = [
+            .name:name,
+            .value:value,
+            .domain:domain,
+            .path:"/",
+            .expires:Date(timeIntervalSinceNow:31536000)
+        ]
+
+        if let cookie = HTTPCookie(properties: props){
+            store.setCookie(cookie)
+        }
+    }
+
+    if url.contains("orbys.eu"){
+        set("orbys-consent-cookie","true",".orbys.eu")
+    }
+
+    if url.contains("youtube.com"){
+        set("SOCS",
+            "CAISEwgDEgk4OTk4NzM2MzgaAmVzIAEaBgiA2ZXPBg",
+            ".youtube.com")
+    }
+}
