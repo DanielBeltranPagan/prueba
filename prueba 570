@@ -1,0 +1,438 @@
+import SwiftUI
+import WebKit
+
+// MARK: - Resolution Spec
+
+struct ResolutionSpec {
+    let longSide: CGFloat   // siempre el lado mayor (landscape width)
+    let shortSide: CGFloat  // siempre el lado menor (landscape height)
+
+    static func from(_ resolution: String) -> ResolutionSpec {
+        switch resolution {
+        case "720p":  return .init(longSide: 1280, shortSide: 720)
+        case "1080p": return .init(longSide: 1920, shortSide: 1080)
+        case "2K":    return .init(longSide: 2560, shortSide: 1440)
+        case "4K":    return .init(longSide: 3840, shortSide: 2160)
+        default:      return .init(longSide: 1920, shortSide: 1080)
+        }
+    }
+
+    func adapted(isLandscape: Bool) -> (w: Int, h: Int) {
+        isLandscape
+            ? (w: Int(longSide),  h: Int(shortSide))
+            : (w: Int(shortSide), h: Int(longSide))
+    }
+}
+
+// MARK: - Main View
+
+struct ContentView: View {
+    @AppStorage("last_url_saved") private var urlText: String = ""
+    @State private var selectedResolution = "1080p"
+    @State private var showWebView = false
+
+    let resolutions = ["720p", "1080p", "2K", "4K"]
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 25) {
+                Text("WebView Resolution Pro")
+                    .font(.system(size: 24, weight: .bold))
+                    .padding(.top, 40)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("URL de destino")
+                        .font(.caption).foregroundColor(.gray)
+                    TextField("Introduce la URL (ej: youtube.com)", text: $urlText)
+                        .textFieldStyle(.roundedBorder)
+                        .textContentType(.URL)
+                        .keyboardType(.URL)
+                        .autocorrectionDisabled(true)
+                        .textInputAutocapitalization(.never)
+                }
+                .padding(.horizontal)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Resolución Objetivo:")
+                        .font(.subheadline).bold()
+                    Picker("Resolución", selection: $selectedResolution) {
+                        ForEach(resolutions, id: \.self) { Text($0).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                }
+                .padding(.horizontal)
+
+                Spacer()
+
+                Button {
+                    if !urlText.trimmingCharacters(in: .whitespaces).isEmpty {
+                        showWebView = true
+                    }
+                } label: {
+                    Text("LANZAR EN \(selectedResolution)")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(urlText.isEmpty ? Color.gray.opacity(0.3) : Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(12)
+                }
+                .disabled(urlText.isEmpty)
+                .padding(.horizontal).padding(.bottom, 30)
+            }
+            .navigationDestination(isPresented: $showWebView) {
+                WebViewManagerView(urlString: urlText, resolution: selectedResolution)
+                    .id(urlText + selectedResolution)
+            }
+        }
+    }
+}
+
+// MARK: - Manager View
+
+struct WebViewManagerView: View {
+    let urlString: String
+    let resolution: String
+
+    @State private var webWidth: Int = 0
+    @State private var webHeight: Int = 0
+    @State private var errorMessage: String? = nil
+
+    var body: some View {
+        Group {
+            if let error = errorMessage {
+                VStack(spacing: 16) {
+                    Image(systemName: "wifi.slash")
+                        .font(.system(size: 48))
+                        .foregroundColor(.gray)
+                    Text("Error de navegación").font(.headline)
+                    Text(error)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                }
+            } else {
+                WebViewContainer(
+                    urlString: urlString,
+                    resolution: resolution,
+                    webWidth: $webWidth,
+                    webHeight: $webHeight,
+                    errorMessage: $errorMessage
+                )
+                .ignoresSafeArea(.container, edges: .bottom)
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                HStack(spacing: 6) {
+                    Image(systemName: errorMessage != nil ? "exclamationmark.triangle" : "viewfinder")
+                    if errorMessage != nil {
+                        Text("Error").font(.system(size: 14, weight: .bold))
+                    } else if webWidth > 0 {
+                        Text("\(webWidth) × \(webHeight) px")
+                            .font(.system(size: 14, weight: .bold, design: .monospaced))
+                    } else {
+                        Text("Cargando…")
+                            .font(.system(size: 14, weight: .bold, design: .monospaced))
+                    }
+                }
+                .foregroundColor(errorMessage != nil ? .orange : .blue)
+            }
+        }
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+// MARK: - Bounds-aware WKWebView
+// Subclase que notifica al coordinator cada vez que layoutSubviews se llama,
+// es decir, exactamente cuando los bounds reales cambian (rotación, etc.)
+// Esto elimina la necesidad de cualquier delay o timer.
+
+final class ObservableWebView: WKWebView {
+    var onBoundsChanged: ((CGRect) -> Void)?
+    private var lastBounds: CGRect = .zero
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard bounds != lastBounds, bounds.width > 0, bounds.height > 0 else { return }
+        lastBounds = bounds
+        onBoundsChanged?(bounds)
+    }
+}
+
+// MARK: - WebView Container
+
+struct WebViewContainer: UIViewRepresentable {
+    let urlString: String
+    let resolution: String
+    @Binding var webWidth: Int
+    @Binding var webHeight: Int
+    @Binding var errorMessage: String?
+
+    func makeUIView(context: Context) -> ObservableWebView {
+        let spec = ResolutionSpec.from(resolution)
+        let coordinator = context.coordinator
+
+        // Script inyectado en documentStart:
+        // Bloquea el viewport antes de que el sitio pueda leerlo/modificarlo.
+        // Usamos el lado largo como ancho inicial (se corrige con el scale en didFinish).
+        // El MutationObserver vigila que el sitio no sobreescriba nuestro viewport después.
+        let guardScript = WKUserScript(source: viewportGuardJS(spec: spec),
+                                      injectionTime: .atDocumentStart,
+                                      forMainFrameOnly: true)
+
+        let contentController = WKUserContentController()
+        contentController.addUserScript(guardScript)
+        contentController.addScriptMessageHandler(coordinator,
+                                                  contentWorld: .page,
+                                                  name: "resObserver")
+
+        let config = WKWebViewConfiguration()
+        config.userContentController = contentController
+        config.defaultWebpagePreferences.preferredContentMode = .desktop
+        config.allowsInlineMediaPlayback = true
+
+        let webView = ObservableWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = coordinator
+        webView.customUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
+        webView.alpha = 0
+
+        // Cuando los bounds cambian (rotación) aplicamos el viewport directamente,
+        // sin ningún delay porque layoutSubviews ya garantiza que los bounds son finales.
+        webView.onBoundsChanged = { [weak coordinator, weak webView] bounds in
+            guard let coordinator = coordinator, let webView = webView else { return }
+            // Solo actuar si la página ya ha cargado (url != nil)
+            guard webView.url != nil else { return }
+            coordinator.applyViewport(to: webView, bounds: bounds)
+        }
+
+        setupCookies(webView: webView)
+
+        var finalUrl = urlString.trimmingCharacters(in: .whitespaces)
+        if !finalUrl.lowercased().hasPrefix("http") { finalUrl = "https://\(finalUrl)" }
+        if let url = URL(string: finalUrl) {
+            webView.load(URLRequest(url: url))
+        }
+
+        return webView
+    }
+
+    func updateUIView(_ uiView: ObservableWebView, context: Context) { }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    static func dismantleUIView(_ uiView: ObservableWebView, coordinator: Coordinator) {
+        uiView.configuration.userContentController
+            .removeScriptMessageHandler(forName: "resObserver", contentWorld: .page)
+        uiView.onBoundsChanged = nil
+    }
+
+    // MARK: - Viewport guard JS (inyectado en documentStart)
+    // Instala un MutationObserver que impide que el sitio sobreescriba nuestro viewport.
+    // Cuando detecta un cambio en el meta viewport, lo restaura inmediatamente.
+    // El valor de scale es provisional (1.0); se corrige en applyViewport() desde Swift.
+    private func viewportGuardJS(spec: ResolutionSpec) -> String {
+        """
+        (function() {
+            var targetW = \(Int(spec.longSide));
+
+            function lockViewport(w) {
+                var meta = document.querySelector('meta[name="viewport"]');
+                if (!meta) {
+                    meta = document.createElement('meta');
+                    meta.name = 'viewport';
+                    document.head.appendChild(meta);
+                }
+                var current = meta.getAttribute('content') || '';
+                var desired = 'width=' + w + ',initial-scale=1,minimum-scale=0.01,maximum-scale=10,user-scalable=no';
+                if (current !== desired) {
+                    meta.setAttribute('content', desired);
+                }
+            }
+
+            lockViewport(targetW);
+
+            // MutationObserver: si el sitio modifica o añade un meta viewport, lo bloqueamos.
+            var observer = new MutationObserver(function(mutations) {
+                mutations.forEach(function(m) {
+                    m.addedNodes.forEach(function(node) {
+                        if (node.name === 'viewport') lockViewport(targetW);
+                    });
+                    if (m.type === 'attributes' &&
+                        m.target.name === 'viewport' &&
+                        m.attributeName === 'content') {
+                        lockViewport(targetW);
+                    }
+                });
+            });
+
+            function startObserver() {
+                if (document.head) {
+                    observer.observe(document.head, {
+                        childList: true,
+                        subtree: true,
+                        attributes: true,
+                        attributeFilter: ['content']
+                    });
+                } else {
+                    document.addEventListener('DOMContentLoaded', function() {
+                        observer.observe(document.head, {
+                            childList: true,
+                            subtree: true,
+                            attributes: true,
+                            attributeFilter: ['content']
+                        });
+                    });
+                }
+            }
+
+            startObserver();
+        })();
+        """
+    }
+
+    // MARK: - Coordinator
+
+    class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWithReply {
+        var parent: WebViewContainer
+
+        init(_ parent: WebViewContainer) { self.parent = parent }
+
+        // MARK: WKScriptMessageHandlerWithReply
+        func userContentController(_ userContentController: WKUserContentController,
+                                   didReceive message: WKScriptMessage,
+                                   replyHandler: @escaping (Any?, String?) -> Void) {
+            if let dict = message.body as? [String: Any] {
+                let w = dict["w"] as? Int ?? 0
+                let h = dict["h"] as? Int ?? 0
+                DispatchQueue.main.async {
+                    self.parent.webWidth = w
+                    self.parent.webHeight = h
+                }
+            }
+            replyHandler(nil, nil)
+        }
+
+        // MARK: WKNavigationDelegate
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            DispatchQueue.main.async { self.parent.errorMessage = nil }
+            // Los bounds pueden no estar listos justo en didFinish.
+            // ObservableWebView.onBoundsChanged se encargará en cuanto el layout se estabilice.
+            // Pero si los bounds ya son válidos (carga lenta), aplicamos ya.
+            if webView.bounds.width > 0 && webView.bounds.height > 0 {
+                applyViewport(to: webView, bounds: webView.bounds)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                UIView.animate(withDuration: 0.4) { webView.alpha = 1 }
+            }
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            handleError(error)
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            handleError(error)
+        }
+
+        private func handleError(_ error: Error) {
+            let ns = error as NSError
+            guard ns.code != NSURLErrorCancelled else { return }
+            DispatchQueue.main.async { self.parent.errorMessage = error.localizedDescription }
+        }
+
+        // MARK: - Core: aplicar viewport con bounds reales
+        func applyViewport(to webView: WKWebView, bounds: CGRect) {
+            let spec = ResolutionSpec.from(parent.resolution)
+            let isLandscape = bounds.width > bounds.height
+            let (targetW, targetH) = spec.adapted(isLandscape: isLandscape)
+
+            // Scale exacto: cuánto hay que encoger targetW para que quepa en bounds.width
+            let scale = bounds.width / CGFloat(targetW)
+
+            // Desactivamos temporalmente el MutationObserver para que no interfiera
+            // con nuestro propio setAttribute, y lo reactivamos tras aplicar.
+            let js = """
+            (function() {
+                var targetW = \(targetW);
+                var targetH = \(targetH);
+                var scale   = \(scale);
+
+                // Parar el observer para que no rebote nuestro cambio
+                if (window.__vpObserver) { window.__vpObserver.disconnect(); }
+
+                var meta = document.querySelector('meta[name="viewport"]');
+                if (!meta) {
+                    meta = document.createElement('meta');
+                    meta.name = 'viewport';
+                    document.head.appendChild(meta);
+                }
+
+                meta.setAttribute('content',
+                    'width='          + targetW +
+                    ',height='        + targetH +
+                    ',initial-scale=' + scale   +
+                    ',minimum-scale=' + scale   +
+                    ',maximum-scale=' + scale   +
+                    ',user-scalable=no'
+                );
+
+                // Reactivar el observer para seguir bloqueando cambios del sitio
+                if (window.__vpObserver && document.head) {
+                    window.__vpObserver.observe(document.head, {
+                        childList: true, subtree: true,
+                        attributes: true, attributeFilter: ['content']
+                    });
+                }
+
+                window.webkit.messageHandlers.resObserver.postMessage({
+                    w: targetW, h: targetH
+                });
+            })();
+            """
+
+            webView.evaluateJavaScript(js) { _, error in
+                if let error = error {
+                    print("[WebView] applyViewport error: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    // MARK: - Cookie setup
+    private func setupCookies(webView: WKWebView) {
+        var finalUrl = urlString.trimmingCharacters(in: .whitespaces)
+        if !finalUrl.lowercased().hasPrefix("http") { finalUrl = "https://\(finalUrl)" }
+        guard let host = URL(string: finalUrl)?.host else { return }
+
+        let store = webView.configuration.websiteDataStore.httpCookieStore
+
+        func add(name: String, value: String, domain: String) {
+            let props: [HTTPCookiePropertyKey: Any] = [
+                .name: name, .value: value, .domain: domain,
+                .path: "/", .expires: Date(timeIntervalSinceNow: 31_536_000)
+            ]
+            if let c = HTTPCookie(properties: props) { store.setCookie(c) }
+        }
+
+        if host.contains("youtube.com") {
+            add(name: "SOCS",
+                value: "CAISEwgDEgk4OTk4NzM2MzgaAmVzIAEaBgiA2ZXPBg",
+                domain: ".youtube.com")
+            let res: String
+            switch resolution {
+            case "4K": res = "2160"
+            case "2K": res = "1440"
+            case "720p": res = "720"
+            default: res = "1080"
+            }
+            add(name: "PREF", value: "f4=4000000&res=\(res)", domain: ".youtube.com")
+        }
+
+        if host.contains("orbys.eu") {
+            add(name: "orbys-consent-cookie", value: "true", domain: ".orbys.eu")
+        }
+    }
+}
