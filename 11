@@ -1,0 +1,140 @@
+import SwiftUI
+import WebKit
+
+// MARK: - WebView Logic
+struct WebViewContainer: UIViewRepresentable {
+    let urlString: String
+    let resolution: String
+    @Binding var isLoading: Bool
+
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = context.coordinator
+        
+        // Simular User Agent de Desktop
+        webView.customUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        
+        setupCookies(for: urlString)
+        return webView
+    }
+
+    func updateUIView(_ uiView: WKWebView, context: Context) {
+        guard let url = URL(string: urlString.starts(with: "http") ? urlString : "https://\(urlString)") else { return }
+        let request = URLRequest(url: url)
+        uiView.load(request)
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    class Coordinator: NSObject, WKNavigationDelegate {
+        var parent: WebViewContainer
+
+        init(_ parent: WebViewContainer) {
+            self.parent = parent
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            let targetWidth: Int = {
+                switch parent.resolution {
+                case "720p": return 720
+                case "1080p": return 1280
+                case "2K": return 2560
+                case "4K": return 3840
+                default: return 1280
+                }
+            }()
+
+            // Cálculo de escala basado en el ancho de la pantalla del iPhone
+            let screenWidth = UIScreen.main.bounds.width
+            let scale = screenWidth / CGFloat(targetWidth)
+
+            let js = """
+            (function() {
+                var style = document.getElementById('resolution-style') || document.createElement('style');
+                style.id = 'resolution-style';
+                style.innerHTML = 'html, body { min-width: \(targetWidth)px !important; width: \(targetWidth)px !important; overflow-x: auto; }';
+                if (!style.parentNode) document.head.appendChild(style);
+
+                var meta = document.querySelector('meta[name="viewport"]') || document.createElement('meta');
+                meta.name = "viewport";
+                meta.setAttribute('content', 'width=\(targetWidth), initial-scale=\(scale), minimum-scale=\(scale), maximum-scale=\(scale), user-scalable=yes');
+                if (!meta.parentNode) document.head.appendChild(meta);
+            })();
+            """
+            
+            webView.evaluateJavaScript(js) { _, _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    self.parent.isLoading = false
+                }
+            }
+        }
+    }
+
+    // MARK: - Cookie Bypass
+    private func setupCookies(for url: String) {
+        let cookieStorage = HTTPCookieStorage.shared
+        
+        if url.contains("youtube.com") {
+            if let cookie = HTTPCookie(properties: [
+                .domain: ".youtube.com",
+                .path: "/",
+                .name: "SOCS",
+                .value: "CAISEwgDEgk4OTk4NzM2MzgaAmVzIAEaBgiA2ZXPBg",
+                .secure: "TRUE",
+                .expires: Date(timeIntervalSinceNow: 31536000)
+            ]) { cookieStorage.setCookie(cookie) }
+        }
+        // Puedes añadir aquí el resto de cookies de marca.com, etc.
+    }
+}
+
+// MARK: - UI Principal
+struct ContentView: View {
+    @State private var url: String = ""
+    @State private var selectedResolution = "720p"
+    @State private var isShowingWebView = false
+    @State private var isLoading = true
+    
+    let resolutions = ["720p", "1080p", "2K", "4K"]
+
+    var body: some View {
+        Form {
+            Section(header: Text("WebView Resolution Pro")) {
+                TextField("URL (ej: google.com)", text: $url)
+                    .autocapitalization(.none)
+                    .keyboardType(.URL)
+                
+                Picker("Resolución", selection: $selectedResolution) {
+                    ForEach(resolutions, id: \.self) { res in
+                        Text(res)
+                    }
+                }
+            }
+            
+            Button(action: {
+                if !url.isEmpty { isShowingWebView = true }
+            }) {
+                Text("LANZAR EN \(selectedResolution)")
+                    .frame(maxWidth: .infinity)
+                    .bold()
+            }
+            .disabled(url.isEmpty)
+        }
+        .navigationTitle("Configuración")
+        .sheet(isPresented: $isShowingWebView) {
+            ZStack {
+                WebViewContainer(urlString: url, resolution: selectedResolution, isLoading: $isLoading)
+                
+                if isLoading {
+                    ProgressView("Cargando renderizado...")
+                        .padding()
+                        .background(Color.white.opacity(0.8))
+                        .cornerRadius(10)
+                }
+            }
+        }
+    }
+}
