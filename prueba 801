@@ -1,0 +1,149 @@
+import SwiftUI
+import WebKit
+
+// MARK: - Main View
+struct ContentView: View {
+    @AppStorage("last_url_saved") private var urlText = ""
+    @State private var selectedRes = "1080p"
+    @State private var showWebView = false
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 20) {
+                Text("WebView Pro").font(.title.bold()).padding(.top)
+                
+                VStack(alignment: .leading) {
+                    Text("URL de destino").font(.caption).foregroundColor(.gray)
+                    TextField("ej: youtube.com", text: $urlText)
+                        .textFieldStyle(.roundedBorder)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                }.padding(.horizontal)
+
+                Picker("Resolución", selection: $selectedRes) {
+                    ForEach(["720p", "1080p", "2K", "4K"], id: \.self) { Text($0) }
+                }.pickerStyle(.segmented).padding(.horizontal)
+
+                Spacer()
+
+                Button(action: { showWebView = true }) {
+                    Text("LANZAR EN \(selectedRes)")
+                        .bold().frame(maxWidth: .infinity).padding()
+                        .background(urlText.isEmpty ? Color.gray : Color.blue)
+                        .foregroundColor(.white).cornerRadius(12)
+                }.disabled(urlText.isEmpty).padding()
+            }
+            .navigationDestination(isPresented: $showWebView) {
+                WebViewManagerView(urlString: urlText, resolution: selectedRes)
+            }
+        }
+    }
+}
+
+// MARK: - Manager View (Con pantalla de carga)
+struct WebViewManagerView: View {
+    let urlString: String
+    let resolution: String
+    @State private var size: (w: Int, h: Int) = (0, 0)
+    @State private var isReady = false 
+
+    var body: some View {
+        ZStack {
+            // WebView: Invisible hasta que el JS confirme el redimensionado
+            WebViewContainer(urlString: urlString, resolution: resolution, size: $size, isReady: $isReady)
+                .ignoresSafeArea()
+                .opacity(isReady ? 1 : 0)
+            
+            // Pantalla de carga
+            if !isReady {
+                VStack(spacing: 15) {
+                    ProgressView()
+                        .scaleEffect(1.5)
+                    Text("Preparando resolución \(resolution)...")
+                        .font(.subheadline).foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(UIColor.systemBackground))
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                if isReady { Text("\(size.w)x\(size.h)").font(.caption.monospaced().bold()) }
+            }
+        }
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+// MARK: - WebView Container
+struct WebViewContainer: UIViewRepresentable {
+    let urlString: String
+    let resolution: String
+    @Binding var size: (w: Int, h: Int)
+    @Binding var isReady: Bool
+
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.userContentController.add(context.coordinator, name: "resObserver")
+        config.defaultWebpagePreferences.preferredContentMode = .desktop
+        
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = context.coordinator
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
+        
+        // Carga inicial
+        let formatted = urlString.lowercased().hasPrefix("http") ? urlString : "https://\(urlString)"
+        if let url = URL(string: formatted.trimmingCharacters(in: .whitespaces)) {
+            setupCookies(for: url, in: webView)
+            webView.load(URLRequest(url: url))
+        }
+        return webView
+    }
+
+    func updateUIView(_ uiView: WKWebView, context: Context) {}
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+        var parent: WebViewContainer
+        init(_ parent: WebViewContainer) { self.parent = parent }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            let resMap: [String: (CGFloat, CGFloat)] = ["720p":(1280,720), "1080p":(1920,1080), "2K":(2560,1440), "4K":(3840,2160)]
+            let spec = resMap[parent.resolution] ?? (1920, 1080)
+            let isLandscape = webView.bounds.width > webView.bounds.height
+            let targetW = isLandscape ? spec.0 : spec.1
+            let scale = webView.bounds.width / targetW
+
+            let js = """
+                var meta = document.querySelector('meta[name="viewport"]') || document.createElement('meta');
+                meta.name = 'viewport';
+                meta.content = 'width=\(targetW), initial-scale=\(scale), minimum-scale=\(scale), user-scalable=no';
+                document.head.appendChild(meta);
+                window.webkit.messageHandlers.resObserver.postMessage({w: \(Int(targetW)), h: \(Int(spec.1))});
+            """
+            // Pequeño delay para que el motor de renderizado asimile el cambio antes de mostrarlo
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                webView.evaluateJavaScript(js)
+            }
+        }
+
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            if let dict = message.body as? [String: Int] {
+                parent.size = (dict["w"] ?? 0, dict["h"] ?? 0)
+                withAnimation { parent.isReady = true }
+            }
+        }
+    }
+
+    private func setupCookies(for url: URL, in webView: WKWebView) {
+        let store = webView.configuration.websiteDataStore.httpCookieStore
+        if url.host?.contains("youtube.com") == true {
+            let resValue = resolution.replacingOccurrences(of: "p", with: "")
+            let cookies = ["SOCS": "CAISEwgDEgk4OTk4NzM2MzgaAmVzIAEaBgiA2ZXPBg", "PREF": "f4=4000000&res=\(resValue)"]
+            cookies.forEach { name, value in
+                let props: [HTTPCookiePropertyKey: Any] = [.name: name, .value: value, .domain: ".youtube.com", .path: "/", .expires: Date(timeIntervalSinceNow: 31536000)]
+                if let c = HTTPCookie(properties: props) { store.setCookie(c) }
+            }
+        }
+    }
+}
