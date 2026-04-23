@@ -1,16 +1,15 @@
 import SwiftUI
 import WebKit
 
-// ==============================
-// MAIN SCREEN (Compose -> SwiftUI)
-// ==============================
+// ======================================================
+// MARK: MAIN SCREEN (igual que Compose)
+// ======================================================
 
 struct ContentView: View {
 
     @State private var url = ""
     let resoluciones = ["720p","1080p","2K","4K"]
     @State private var selected = "720p"
-
     @State private var launch = false
 
     var body: some View {
@@ -49,7 +48,6 @@ struct ContentView: View {
                     }
 
                     Button("LANZAR EN \(selected)") {
-
                         if !url.isEmpty {
                             launch = true
                         }
@@ -72,14 +70,14 @@ struct ContentView: View {
     }
 }
 
-//////////////////////////////////////////////////////////////
-// MARK: - WEBVIEW SCREEN (WebViewActivity Android)
-//////////////////////////////////////////////////////////////
+// ======================================================
+// MARK: WEBVIEW SCREEN
+// ======================================================
 
 struct WebViewScreen: View {
 
-    var url: String
-    var resolution: String
+    var url:String
+    var resolution:String
 
     var body: some View {
         WebViewRepresentable(
@@ -90,14 +88,14 @@ struct WebViewScreen: View {
     }
 }
 
-//////////////////////////////////////////////////////////////
-// MARK: - WKWEBVIEW WRAPPER
-//////////////////////////////////////////////////////////////
+// ======================================================
+// MARK: WKWEBVIEW WRAPPER
+// ======================================================
 
 struct WebViewRepresentable: UIViewRepresentable {
 
-    var url: String
-    var resolution: String
+    var url:String
+    var resolution:String
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -114,6 +112,8 @@ struct WebViewRepresentable: UIViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.translatesAutoresizingMaskIntoConstraints = false
         webView.isHidden = true
+        webView.scrollView.bounces = false
+        webView.scrollView.pinchGestureRecognizer?.isEnabled = false
 
         context.coordinator.webView = webView
 
@@ -136,12 +136,20 @@ struct WebViewRepresentable: UIViewRepresentable {
             loader.centerYAnchor.constraint(equalTo: container.centerYAnchor)
         ])
 
+        // Detectar rotación
+        NotificationCenter.default.addObserver(
+            context.coordinator,
+            selector: #selector(Coordinator.orientationChanged),
+            name: UIDevice.orientationDidChangeNotification,
+            object: nil
+        )
+
         setupCookies(url: url)
 
         let finalUrl =
-            url.starts(with:"http") ?
-            url :
-            "https://\(url)"
+        url.starts(with:"http")
+        ? url
+        : "https://\(url)"
 
         webView.load(URLRequest(url: URL(string: finalUrl)!))
 
@@ -150,9 +158,9 @@ struct WebViewRepresentable: UIViewRepresentable {
 
     func updateUIView(_ uiView: UIView, context: Context) {}
 
-    //////////////////////////////////////////////////////////
+    // ==================================================
     // MARK: COORDINATOR
-    //////////////////////////////////////////////////////////
+    // ==================================================
 
     class Coordinator: NSObject, WKNavigationDelegate {
 
@@ -177,9 +185,27 @@ struct WebViewRepresentable: UIViewRepresentable {
             }
         }
 
-        //////////////////////////////////////////////////////
-        // RESOLUTION FAKE (igual Android)
-        //////////////////////////////////////////////////////
+        // ===============================
+        // ROTATION FIX (SIN ZOOM)
+        // ===============================
+
+        @objc func orientationChanged() {
+
+            guard let webView else { return }
+
+            UIView.performWithoutAnimation {
+
+                webView.scrollView.zoomScale = 1.0
+
+                DispatchQueue.main.asyncAfter(deadline: .now()+0.1) {
+                    self.applyResolution()
+                }
+            }
+        }
+
+        // ===============================
+        // RESOLUTION ENGINE
+        // ===============================
 
         func applyResolution() {
 
@@ -197,21 +223,20 @@ struct WebViewRepresentable: UIViewRepresentable {
 
             }()
 
-            let deviceWidth =
-                UIScreen.main.bounds.width
-
+            let deviceWidth = webView.bounds.width
             let scale = deviceWidth / CGFloat(targetWidth)
 
             let js = """
-            (function() {
+            (function(){
 
-                var style = document.getElementById('resolution-style')
+                var style =
+                document.getElementById('resolution-style')
                 || document.createElement('style');
 
                 style.id='resolution-style';
 
                 style.innerHTML=
-                'html, body { min-width:\(targetWidth)px !important; width:\(targetWidth)px !important;}';
+                'html,body{min-width:\(targetWidth)px!important;width:\(targetWidth)px!important;}';
 
                 if(!style.parentNode)
                     document.head.appendChild(style);
@@ -224,7 +249,7 @@ struct WebViewRepresentable: UIViewRepresentable {
 
                 meta.setAttribute(
                     'content',
-                    'width=\(targetWidth), initial-scale=\(scale), minimum-scale=\(scale), maximum-scale=\(scale), user-scalable=yes'
+                    'width=\(targetWidth),initial-scale=\(scale),minimum-scale=\(scale),maximum-scale=\(scale),user-scalable=yes'
                 );
 
                 if(!meta.parentNode)
@@ -238,9 +263,9 @@ struct WebViewRepresentable: UIViewRepresentable {
     }
 }
 
-//////////////////////////////////////////////////////////////
-// MARK: COOKIE BYPASS (Android -> iOS)
-//////////////////////////////////////////////////////////////
+// ======================================================
+// MARK: COOKIE BYPASS
+// ======================================================
 
 func setupCookies(url:String) {
 
@@ -248,7 +273,7 @@ func setupCookies(url:String) {
 
     func set(_ name:String,_ value:String,_ domain:String){
 
-        var props:[HTTPCookiePropertyKey:Any] = [
+        let props:[HTTPCookiePropertyKey:Any] = [
             .name:name,
             .value:value,
             .domain:domain,
@@ -266,8 +291,10 @@ func setupCookies(url:String) {
     }
 
     if url.contains("youtube.com"){
-        set("SOCS",
+        set(
+            "SOCS",
             "CAISEwgDEgk4OTk4NzM2MzgaAmVzIAEaBgiA2ZXPBg",
-            ".youtube.com")
+            ".youtube.com"
+        )
     }
 }
