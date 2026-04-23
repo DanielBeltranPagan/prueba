@@ -63,39 +63,46 @@ struct WebViewManagerView: View {
     let resolution: String
     @State private var webSize: (w: Int, h: Int) = (0, 0)
     @State private var errorMessage: String? = nil
-    @State private var isReady: Bool = false // Pantalla de carga
+    @State private var isReady: Bool = false 
 
     var body: some View {
         ZStack {
-            if let error = errorMessage {
-                VStack(spacing: 16) {
-                    Image(systemName: "wifi.slash").font(.system(size: 48)).foregroundColor(.gray)
-                    Text("Error de navegación").font(.headline)
-                    Text(error).font(.caption).foregroundColor(.secondary).multilineTextAlignment(.center)
-                }.padding()
-            } else {
-                // El WebView se oculta hasta que esté listo
-                WebViewContainer(urlString: urlString, resolution: resolution, webSize: $webSize, errorMessage: $errorMessage, isReady: $isReady)
-                    .ignoresSafeArea(.container, edges: .bottom)
-                    .opacity(isReady ? 1 : 0)
-            }
+            // Capa del WebView
+            WebViewContainer(urlString: urlString, resolution: resolution, webSize: $webSize, errorMessage: $errorMessage, isReady: $isReady)
+                .ignoresSafeArea(.container, edges: .bottom)
+                .opacity(isReady ? 1 : 0) // Solo se muestra al estar 100% listo
+                .animation(.easeIn(duration: 0.4), value: isReady)
 
+            // Pantalla de carga extendida
             if !isReady && errorMessage == nil {
                 Color(UIColor.systemBackground).ignoresSafeArea()
-                VStack(spacing: 20) {
+                VStack(spacing: 25) {
                     ProgressView()
-                    Text("Ajustando resolución...").font(.footnote).foregroundColor(.gray)
+                        .scaleEffect(1.2)
+                    VStack(spacing: 8) {
+                        Text("Configurando \(resolution)...")
+                            .font(.headline)
+                        Text("Ajustando dimensiones de escritorio")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+
+            if let error = errorMessage {
+                Color(UIColor.systemBackground).ignoresSafeArea()
+                VStack(spacing: 16) {
+                    Image(systemName: "wifi.slash").font(.largeTitle).foregroundColor(.gray)
+                    Text(error).font(.caption).multilineTextAlignment(.center).padding()
+                    Button("Volver") { /* Aquí podrías añadir lógica para cerrar */ }
                 }
             }
         }
         .toolbar {
             ToolbarItem(placement: .principal) {
-                HStack(spacing: 6) {
-                    Image(systemName: errorMessage != nil ? "exclamationmark.triangle" : "viewfinder")
-                    Text(errorMessage != nil ? "Error" : (webSize.w > 0 ? "\(webSize.w) × \(webSize.h) px" : "Cargando…"))
-                        .font(.system(size: 14, weight: .bold, design: .monospaced))
-                }
-                .foregroundColor(errorMessage != nil ? .orange : .blue)
+                Text(isReady ? "\(webSize.w) × \(webSize.h) px" : "Sincronizando...")
+                    .font(.system(size: 14, weight: .bold, design: .monospaced))
+                    .foregroundColor(.blue)
             }
         }
         .navigationBarTitleDisplayMode(.inline)
@@ -117,12 +124,10 @@ struct WebViewContainer: UIViewRepresentable {
         
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
-        webView.scrollView.contentInsetAdjustmentBehavior = .never
-        webView.customUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+        webView.customUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
         
         let formatted = urlString.lowercased().hasPrefix("http") ? urlString : "https://\(urlString)"
         if let url = URL(string: formatted.trimmingCharacters(in: .whitespaces)) {
-            setupCookies(webView: webView, url: url)
             webView.load(URLRequest(url: url))
         }
         return webView
@@ -136,7 +141,10 @@ struct WebViewContainer: UIViewRepresentable {
         init(_ parent: WebViewContainer) { self.parent = parent }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            applyResolution(webView)
+            // Esperamos un poco después de "didFinish" porque el DOM puede seguir moviéndose
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                self.applyResolution(webView)
+            }
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -146,7 +154,13 @@ struct WebViewContainer: UIViewRepresentable {
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             if let dict = message.body as? [String: Int] {
                 parent.webSize = (dict["w"] ?? 0, dict["h"] ?? 0)
-                withAnimation { parent.isReady = true }
+                
+                // DURACIÓN EXTRA: Una vez que el JS confirma el cambio, 
+                // esperamos 1 segundo extra para que la imagen se estabilice 
+                // antes de quitar la cortina de carga.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                    withAnimation { self.parent.isReady = true }
+                }
             }
         }
 
@@ -162,23 +176,13 @@ struct WebViewContainer: UIViewRepresentable {
                 meta.name = 'viewport';
                 meta.content = 'width=\(targetW), initial-scale=\(scale), minimum-scale=\(scale), user-scalable=no';
                 document.head.appendChild(meta);
-                window.webkit.messageHandlers.resObserver.postMessage({w: \(Int(targetW)), h: \(Int(spec.1))});
+                
+                // Forzar un pequeño reflow antes de avisar a la app
+                setTimeout(function() {
+                    window.webkit.messageHandlers.resObserver.postMessage({w: \(Int(targetW)), h: \(Int(spec.1))});
+                }, 200);
             """
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                webView.evaluateJavaScript(js)
-            }
-        }
-    }
-
-    private func setupCookies(webView: WKWebView, url: URL) {
-        let store = webView.configuration.websiteDataStore.httpCookieStore
-        if url.host?.contains("youtube.com") == true {
-            let res = resolution.replacingOccurrences(of: "p", with: "")
-            let cookies = ["SOCS": "CAISEwgDEgk4OTk4NzM2MzgaAmVzIAEaBgiA2ZXPBg", "PREF": "f4=4000000&res=\(res)"]
-            cookies.forEach { name, value in
-                let p: [HTTPCookiePropertyKey: Any] = [.name: name, .value: value, .domain: ".youtube.com", .path: "/", .expires: Date(timeIntervalSinceNow: 31536000)]
-                if let c = HTTPCookie(properties: p) { store.setCookie(c) }
-            }
+            webView.evaluateJavaScript(js)
         }
     }
 }
