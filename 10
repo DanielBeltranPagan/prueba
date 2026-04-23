@@ -1,0 +1,132 @@
+import SwiftUI
+import WebKit
+
+struct ContentView: View {
+
+    @State private var urlText = ""
+    @State private var selectedResolution = "1080p"
+    @State private var show = false
+
+    let resolutions = ["720p", "1080p", "2K", "4K"]
+
+    var body: some View {
+        NavigationStack {
+            VStack {
+
+                TextField("URL", text: $urlText)
+                    .textFieldStyle(.roundedBorder)
+                    .padding()
+
+                Picker("Res", selection: $selectedResolution) {
+                    ForEach(resolutions, id: \.self) { Text($0) }
+                }
+                .pickerStyle(.segmented)
+
+                Button("Abrir") {
+                    show = true
+                }
+                .padding()
+
+                Spacer()
+            }
+            .navigationDestination(isPresented: $show) {
+                WebView(url: urlText, resolution: selectedResolution)
+            }
+        }
+    }
+}
+
+// MARK: - WebView
+struct WebView: UIViewRepresentable {
+
+    let url: String
+    let resolution: String
+
+    func makeUIView(context: Context) -> WKWebView {
+
+        let web = WKWebView()
+        web.navigationDelegate = context.coordinator
+        context.coordinator.webView = web
+
+        var final = url
+        if !final.hasPrefix("http") {
+            final = "https://\(final)"
+        }
+
+        web.load(URLRequest(url: URL(string: final)!))
+        return web
+    }
+
+    func updateUIView(_ uiView: WKWebView, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    class Coordinator: NSObject, WKNavigationDelegate {
+
+        var parent: WebView
+        weak var webView: WKWebView?
+
+        init(_ parent: WebView) {
+            self.parent = parent
+            super.init()
+
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(updateScale),
+                name: UIDevice.orientationDidChangeNotification,
+                object: nil
+            )
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                self.updateScale()
+            }
+        }
+
+        @objc func updateScale() {
+            guard let webView = webView else { return }
+
+            let size = webView.frame.size
+            if size.width == 0 { return }
+
+            let (targetW, targetH): (CGFloat, CGFloat)
+
+            switch parent.resolution {
+            case "720p": (targetW, targetH) = (1280, 720)
+            case "1080p": (targetW, targetH) = (1920, 1080)
+            case "2K": (targetW, targetH) = (2560, 1440)
+            case "4K": (targetW, targetH) = (3840, 2160)
+            default: (targetW, targetH) = (1920, 1080)
+            }
+
+            let isLandscape = size.width > size.height
+
+            let contentW = isLandscape ? targetW : targetH
+            let contentH = isLandscape ? targetH : targetW
+
+            let scale = size.width / contentW
+
+            let js = """
+            (function() {
+
+                document.body.style.margin = "0";
+                document.body.style.padding = "0";
+
+                document.body.style.width = "\(contentW)px";
+                document.body.style.height = "\(contentH)px";
+
+                document.body.style.transform = "scale(\(scale))";
+                document.body.style.transformOrigin = "top left";
+
+                document.documentElement.style.overflow = "hidden";
+
+            })();
+            """
+
+            webView.evaluateJavaScript(js)
+        }
+    }
+}
