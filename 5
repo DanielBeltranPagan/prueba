@@ -60,7 +60,6 @@ struct ContentView: View {
             }
             .navigationDestination(isPresented: $showWebView) {
                 WebViewManagerView(urlString: urlText, resolution: selectedResolution)
-                    // FIX: .id() fuerza recreación cuando cambia URL o resolución — correcto y necesario
                     .id(urlText + selectedResolution)
             }
         }
@@ -71,6 +70,9 @@ struct ContentView: View {
 struct WebViewManagerView: View {
     let urlString: String
     let resolution: String
+
+    // w = ancho CSS que ve el sitio web (ej: 1280 para 720p)
+    // h = altura visible en pantalla en px CSS (sin scroll)
     @State private var webWidth: Int = 0
     @State private var webHeight: Int = 0
     @State private var errorMessage: String? = nil
@@ -78,7 +80,6 @@ struct WebViewManagerView: View {
     var body: some View {
         Group {
             if let error = errorMessage {
-                // FIX: Mostrar errores de navegación en lugar de silenciarlos
                 VStack(spacing: 16) {
                     Image(systemName: "wifi.slash")
                         .font(.system(size: 48))
@@ -104,14 +105,18 @@ struct WebViewManagerView: View {
         }
         .toolbar {
             ToolbarItem(placement: .principal) {
-                HStack {
+                HStack(spacing: 6) {
                     Image(systemName: errorMessage != nil ? "exclamationmark.triangle" : "viewfinder")
-                    if errorMessage == nil {
-                        Text(webWidth > 0 ? "\(webWidth) x \(webHeight) PX" : "Cargando…")
-                            .font(.system(size: 14, weight: .bold, design: .monospaced))
-                    } else {
+                    if errorMessage != nil {
                         Text("Error")
                             .font(.system(size: 14, weight: .bold))
+                    } else if webWidth > 0 {
+                        // Ancho × alto visible del viewport configurado
+                        Text("\(webWidth) × \(webHeight) px")
+                            .font(.system(size: 14, weight: .bold, design: .monospaced))
+                    } else {
+                        Text("Cargando…")
+                            .font(.system(size: 14, weight: .bold, design: .monospaced))
                     }
                 }
                 .foregroundColor(errorMessage != nil ? .orange : .blue)
@@ -129,6 +134,7 @@ struct WebViewContainer: UIViewRepresentable {
     @Binding var webHeight: Int
     @Binding var errorMessage: String?
 
+    /// Ancho lógico CSS que queremos forzar en el sitio web
     var targetWidth: CGFloat {
         switch resolution {
         case "720p":  return 1280
@@ -141,8 +147,6 @@ struct WebViewContainer: UIViewRepresentable {
 
     func makeUIView(context: Context) -> WKWebView {
         let contentController = WKUserContentController()
-        // FIX: Usar ScriptMessageHandlerWithReply o wrapper weak para evitar memory leak.
-        // Usamos un wrapper que no retiene fuertemente al coordinator.
         contentController.addScriptMessageHandler(
             context.coordinator,
             contentWorld: .page,
@@ -162,7 +166,6 @@ struct WebViewContainer: UIViewRepresentable {
 
         setupCookies(webView: webView)
 
-        // Cargamos la URL aquí, en makeUIView, una sola vez.
         var finalUrl = urlString.trimmingCharacters(in: .whitespaces)
         if !finalUrl.lowercased().hasPrefix("http") {
             finalUrl = "https://\(finalUrl)"
@@ -175,15 +178,12 @@ struct WebViewContainer: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
-        // FIX: No hacer nada aquí. La carga se realiza en makeUIView una única vez.
-        // La recreación de la vista completa (via .id()) se encarga de los cambios de URL/resolución.
-        // Así evitamos inyectar el script repetidamente en cada redibujado de SwiftUI.
+        // Vacío intencionalmente: carga y script se gestionan en makeUIView
+        // y en los callbacks del WKNavigationDelegate.
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    // FIX: Implementar dismantleUIView para limpiar el script message handler
-    // y evitar el memory leak (referencia fuerte WKUserContentController → Coordinator → WebViewContainer).
     static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {
         uiView.configuration.userContentController.removeScriptMessageHandler(
             forName: "resObserver",
@@ -195,7 +195,6 @@ struct WebViewContainer: UIViewRepresentable {
     class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWithReply {
 
         var parent: WebViewContainer
-        // FIX: Flag para inyectar el script solo una vez por carga de página
         private var scriptInjected = false
 
         init(_ parent: WebViewContainer) { self.parent = parent }
@@ -218,22 +217,15 @@ struct WebViewContainer: UIViewRepresentable {
         }
 
         // MARK: WKNavigationDelegate
-
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            // FIX: Resetear el flag al terminar cada navegación para permitir reinyección
             scriptInjected = false
             applyViewportScript(webView)
-            DispatchQueue.main.async {
-                self.parent.errorMessage = nil
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                UIView.animate(withDuration: 0.4) {
-                    webView.alpha = 1
-                }
+            DispatchQueue.main.async { self.parent.errorMessage = nil }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                UIView.animate(withDuration: 0.4) { webView.alpha = 1 }
             }
         }
 
-        // FIX: Manejar errores de navegación correctamente
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
             handleNavigationError(error)
         }
@@ -243,7 +235,6 @@ struct WebViewContainer: UIViewRepresentable {
         }
 
         private func handleNavigationError(_ error: Error) {
-            // Ignorar cancelaciones (e.g. redireccionamientos intermedios)
             let nsError = error as NSError
             if nsError.code == NSURLErrorCancelled { return }
             DispatchQueue.main.async {
@@ -251,75 +242,83 @@ struct WebViewContainer: UIViewRepresentable {
             }
         }
 
-        // MARK: Script injection
+        // MARK: - Viewport Script
         func applyViewportScript(_ webView: WKWebView) {
-            // FIX: Inyectar solo una vez por carga de página
             guard !scriptInjected else { return }
             scriptInjected = true
 
-            let tW = parent.targetWidth
+            let targetW = parent.targetWidth
 
-            // FIX: El cálculo de altura estaba mal. scrollHeight ya está en unidades CSS
-            // dentro del viewport con width=targetW, por lo tanto NO hay que dividir por scale.
-            // La altura real en píxeles de dispositivo sería scrollHeight * scale,
-            // pero lo útil para el usuario es mostrar el ancho lógico y la altura lógica CSS.
+            // ─── CÁLCULO CORRECTO DEL SCALE ──────────────────────────────────────────
+            //
+            // Leemos el ancho de la WKWebView en PUNTOS UIKit desde Swift,
+            // ANTES de que JS modifique nada. Esto evita el problema anterior donde
+            // window.innerWidth ya estaba contaminado por el viewport modificado.
+            //
+            // Ejemplo 720p en iPhone 14 Pro (390 pts de ancho):
+            //   scale = 390 / 1280 = 0.3047
+            //   → El sitio renderiza como si tuviera 1280px de ancho CSS
+            //   → Se escala visualmente a 390 puntos de pantalla  ✓
+            //
+            // La altura visible = puntos de alto / scale
+            //   = 844 / 0.3047 = ~2770 px CSS  (razonable, no 11543)
+            // ─────────────────────────────────────────────────────────────────────────
+
+            let deviceWidthPts = webView.bounds.width > 0
+                ? webView.bounds.width
+                : UIScreen.main.bounds.width
+
+            let deviceHeightPts = webView.bounds.height > 0
+                ? webView.bounds.height
+                : UIScreen.main.bounds.height
+
+            let scale = deviceWidthPts / targetW
+
+            // Altura visible en px CSS (lo que cabe en pantalla sin scroll)
+            let visibleHeightCSS = Int((deviceHeightPts / scale).rounded())
+
             let js = """
             (function() {
-                var targetW = \(tW);
-                var applied = false;
+                var targetW  = \(Int(targetW));
+                var scale    = \(scale);
+                var visibleH = \(visibleHeightCSS);
 
-                function applyViewport() {
-                    var deviceW = window.screen.width * window.devicePixelRatio;
-                    // Usamos window.innerWidth (puntos SwiftUI) para el escalado visual
-                    var visualW = window.innerWidth;
-                    var scale = visualW / targetW;
-
-                    var meta = document.querySelector('meta[name="viewport"]');
-                    if (!meta) {
-                        meta = document.createElement('meta');
-                        meta.name = "viewport";
-                        document.head.appendChild(meta);
-                    }
-
-                    meta.setAttribute('content',
-                        'width=' + targetW +
-                        ', initial-scale=' + scale +
-                        ', minimum-scale=' + scale +
-                        ', maximum-scale=' + scale +
-                        ', user-scalable=no'
-                    );
-
-                    if (!applied) {
-                        applied = true;
-                        // FIX: Altura correcta en píxeles lógicos CSS (sin doble división)
-                        window.webkit.messageHandlers.resObserver.postMessage({
-                            w: Math.round(targetW),
-                            h: Math.round(document.documentElement.scrollHeight)
-                        });
-                    }
+                // Aplicar el viewport con valores calculados desde Swift.
+                // NO usamos window.innerWidth aquí porque puede estar ya distorsionado
+                // si el viewport fue modificado en una carga anterior.
+                var meta = document.querySelector('meta[name="viewport"]');
+                if (!meta) {
+                    meta = document.createElement('meta');
+                    meta.name = 'viewport';
+                    document.head.appendChild(meta);
                 }
+                meta.setAttribute('content',
+                    'width='          + targetW  +
+                    ',initial-scale=' + scale    +
+                    ',minimum-scale=' + scale    +
+                    ',maximum-scale=' + scale    +
+                    ',user-scalable=no'
+                );
 
-                applyViewport();
-
-                window.addEventListener("orientationchange", function() {
-                    setTimeout(function() {
-                        applied = false;
-                        applyViewport();
-                    }, 300);
+                // Reportar ancho configurado + altura visible (sin scroll).
+                // Esto es lo que tiene sentido mostrar en el toolbar:
+                // "1280 × 2770 px" para 720p, no "1280 × 11543 px" (scroll total).
+                window.webkit.messageHandlers.resObserver.postMessage({
+                    w: targetW,
+                    h: visibleH
                 });
             })();
             """
 
             webView.evaluateJavaScript(js) { _, error in
                 if let error = error {
-                    print("JS error: \(error.localizedDescription)")
+                    print("[WebView] JS error: \(error.localizedDescription)")
                 }
             }
         }
     }
 
     // MARK: - Cookie setup
-    // FIX: Parsear el dominio real de la URL en lugar de hacer string matching sobre el texto crudo.
     private func setupCookies(webView: WKWebView) {
         var finalUrl = urlString.trimmingCharacters(in: .whitespaces)
         if !finalUrl.lowercased().hasPrefix("http") {
