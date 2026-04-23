@@ -67,30 +67,54 @@ struct WebViewManagerView: View {
 
     @State private var webWidth: Int = 0
     @State private var webHeight: Int = 0
-    @State private var errorMessage: String? = nil
-    
-    // El secreto: Una ID que cambia con la rotación para forzar el refresco del script
+    @State private var isRotating = false // Controla la capa de carga
     @State private var rotationTrigger = UUID()
 
     var body: some View {
-        WebViewContainer(
-            urlString: urlString,
-            resolution: resolution,
-            webWidth: $webWidth,
-            webHeight: $webHeight,
-            errorMessage: $errorMessage,
-            rotationTrigger: rotationTrigger // Pasamos el trigger
-        )
-        .ignoresSafeArea(.container, edges: .bottom)
+        ZStack {
+            WebViewContainer(
+                urlString: urlString,
+                resolution: resolution,
+                webWidth: $webWidth,
+                webHeight: $webHeight,
+                rotationTrigger: rotationTrigger
+            )
+            .ignoresSafeArea(.container, edges: .bottom)
+
+            // CAPA DE CARGA AL ROTAR
+            if isRotating {
+                Color.black.opacity(0.8)
+                    .ignoresSafeArea()
+                    .overlay(
+                        VStack(spacing: 15) {
+                            ProgressView()
+                                .tint(.white)
+                                .scaleEffect(1.5)
+                            Text("Ajustando resolución...")
+                                .foregroundColor(.white)
+                                .font(.caption.bold())
+                        }
+                    )
+                    .transition(.opacity)
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
-            // Cuando el iPhone gira, esperamos un momento y disparamos la actualización
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            // 1. Empezamos la carga inmediatamente
+            withAnimation { isRotating = true }
+            
+            // 2. Esperamos medio segundo a que el iPhone termine de rotar físicamente
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                 self.rotationTrigger = UUID()
+                // 3. Quitamos la carga un poco después de aplicar el script
+                withAnimation { isRotating = false }
             }
         }
         .toolbar {
             ToolbarItem(placement: .principal) {
-                Text("\(webWidth) × \(webHeight) px").font(.caption.monospaced()).bold().foregroundColor(.blue)
+                Text("\(webWidth) × \(webHeight) px")
+                    .font(.caption.monospaced())
+                    .bold()
+                    .foregroundColor(.blue)
             }
         }
     }
@@ -102,8 +126,7 @@ struct WebViewContainer: UIViewRepresentable {
     let resolution: String
     @Binding var webWidth: Int
     @Binding var webHeight: Int
-    @Binding var errorMessage: String?
-    let rotationTrigger: UUID // Detecta cambios desde fuera
+    let rotationTrigger: UUID
 
     var baseLong: CGFloat {
         switch resolution {
@@ -145,7 +168,6 @@ struct WebViewContainer: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
-        // Cada vez que rotationTrigger cambia (al rotar), se ejecuta esto
         context.coordinator.applyViewport(uiView)
     }
 
@@ -177,18 +199,20 @@ struct WebViewContainer: UIViewRepresentable {
             let targetW = isLandscape ? parent.baseLong : parent.baseShort
             let targetH = isLandscape ? parent.baseShort : parent.baseLong
             
-            // Calculamos la escala exacta según el ancho actual del iPhone
             let scale = width / targetW
 
             let js = """
-            var meta = document.querySelector('meta[name="viewport"]');
-            if (!meta) {
-                meta = document.createElement('meta');
-                meta.name = 'viewport';
-                document.head.appendChild(meta);
-            }
-            meta.setAttribute('content', 'width=\(Int(targetW)), initial-scale=\(scale), minimum-scale=\(scale), maximum-scale=\(scale), user-scalable=no');
-            window.webkit.messageHandlers.resObserver.postMessage({w: \(Int(targetW)), h: \(Int(targetH))});
+            (function() {
+                var meta = document.querySelector('meta[name="viewport"]');
+                if (!meta) {
+                    meta = document.createElement('meta');
+                    meta.name = 'viewport';
+                    document.head.appendChild(meta);
+                }
+                meta.setAttribute('content', 'width=\(Int(targetW)), initial-scale=\(scale), minimum-scale=\(scale), maximum-scale=\(scale), user-scalable=no');
+                window.dispatchEvent(new Event('resize'));
+                window.webkit.messageHandlers.resObserver.postMessage({w: \(Int(targetW)), h: \(Int(targetH))});
+            })();
             """
             webView.evaluateJavaScript(js)
         }
